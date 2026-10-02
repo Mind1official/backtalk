@@ -31,7 +31,9 @@ session" / "compact the session" / "switch to the deep model" / "back
 to the fast model" / "set effort to low" (or medium, high, max) /
 "usage report" / "go hands free" and "push to talk mode" (the MIC) /
 "stop asking for permission" and "start asking again" (permissions,
-called auto-approve, a different axis than the microphone on purpose).
+called auto-approve, a different axis than the microphone on purpose) /
+"go answer only mode" and "open mic mode" (ignore anything that
+doesn't lead with the agent's name).
 And with permission_mode "ask" (the default), gated tool calls ASK OUT
 LOUD and your spoken yes or no decides them; any other answer is
 passed back to the agent as the reason.
@@ -104,6 +106,11 @@ _AUTOAPPROVE = {"on": False}
 # open-mic capture from before the switch gets discarded, never
 # processed.
 _MIC = {"mode": "ptt", "gen": 0, "btn": False}
+# "go answer only mode" / "open mic mode": while on, an utterance is
+# dropped unless it LEADS with the agent's name (the cue gets stripped
+# before the rest goes to the brain). A filter on top of open-mic
+# listening, not a mic_mode of its own.
+_ANSWERONLY = {"on": False}
 
 # Approvals are EXACT matches after normalization, never prefixes:
 # "yesterday", "yes or no", and "yes, but do not overwrite" must all
@@ -325,6 +332,8 @@ CONSOLE_VERBS = {
                   "auto approve mode"),
     "ask":       ("start asking again", "ask before acting",
                   "ask for permission again"),
+    "answeronly_on":  ("go answer only mode",),
+    "answeronly_off": ("open mic mode",),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -815,6 +824,25 @@ async def amain():
                        "past a restart. ")
                       + "Say start asking again any time to flip it "
                         "back.")
+        elif verb == "answeronly_on":
+            resp = ""
+            if _ANSWERONLY["on"]:
+                mouth.say("Already in answer-only mode.")
+            else:
+                _ANSWERONLY["on"] = True
+                log("[console] answer-only -> on")
+                mouth.say(f"Answer-only mode on. I'll ignore anything "
+                          f"that doesn't start with {NAME}. Say open "
+                          "mic mode to turn it back off.")
+        elif verb == "answeronly_off":
+            resp = ""
+            if not _ANSWERONLY["on"]:
+                mouth.say("Already in open mic mode.")
+            else:
+                _ANSWERONLY["on"] = False
+                log("[console] answer-only -> off")
+                mouth.say("Open mic mode. I'll answer anything again, "
+                          "no name needed.")
         elif verb == "ask":
             resp = ""
             saved = _write_config_key("permission_mode", "ask")
@@ -925,6 +953,14 @@ async def amain():
         if verb:
             await run_console(verb)
             return True
+        if _ANSWERONLY["on"]:
+            parts = text.strip().split(None, 1)
+            if not parts or _norm_speech(parts[0]) != _norm_speech(NAME):
+                log(f"[gate]   answer-only: ignored (no {NAME!r} lead-in)")
+                return True
+            text = parts[1] if len(parts) > 1 else ""
+            if not text:
+                return True
         signals.set_state("thinking")
         signals.static_start()
         # Clean the pipe: drain the interrupted turn's leftovers so the
