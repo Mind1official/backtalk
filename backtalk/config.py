@@ -165,6 +165,25 @@ DEFAULTS = {
     # brain. Lower feels snappier; higher gives more room to pause
     # mid-sentence without getting cut off.
     "silence_ms": 1000,
+    # NOISE GATE. webrtcvad calls a mic bump, a chair creak or a desk
+    # knock "speech" -- it is loud and broadband, which is exactly what
+    # speech looks like to it -- and Whisper then hallucinates a short
+    # phrase out of it ("Thank you.", "Okay."). Two independent layers
+    # catch that, both off-switchable:
+    #
+    # How many dB a frame must sit ABOVE the running room-noise floor to
+    # count as speech. The floor is learned continuously from quiet
+    # frames, so this travels between a silent room and a loud one
+    # without retuning. Raise it if handling noise still gets through;
+    # lower it if quiet speech gets ignored. 0 disables the gate.
+    "mic_gate_db": 10.0,
+    # Drop a finished transcript that is nothing but a lone filler or
+    # courtesy word -- the signature of Whisper being handed noise. A
+    # real one-word reply ("yes", "no", "stop", "go") is never on this
+    # list. Empty list disables the filter.
+    "noise_words": ["thank you", "thanks", "okay", "ok", "oh", "ah",
+                    "uh", "um", "hmm", "mm", "mhm", "huh", "you",
+                    "bye", "so", "yeah okay", "thank you."],
     # Optional premium voice: ElevenLabs on YOUR key. The key NEVER
     # goes in a file: it's read from the macOS Keychain (item
     # `backtalk-elevenlabs`) or Linux secret-tool, with the

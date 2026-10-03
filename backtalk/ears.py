@@ -24,6 +24,11 @@ complete utterance is heard, then returns its transcript. Endpointing:
 an utterance opens after ~120ms of sustained speech, closes after
 `silence_ms` of trailing quiet. A `gate` callable can suppress
 listening (so the open mic ignores the speakers unless barge-in is on).
+
+A two-layer noise gate sits in front of all of it: frames must be
+`mic_gate_db` above the continuously learned room-noise floor to count
+as speech, and a finished transcript that is nothing but a lone filler
+word is dropped (see NoiseFloor and is_noise_word).
 """
 import platform
 import re
@@ -44,6 +49,68 @@ OPEN_FRAMES = 4        # ~120ms speech to open an utterance
 MAX_UTTER_S = 30
 
 _NONSPEECH = re.compile(r"[\[(][^\])]*[\])]")
+
+# Noise-gate constants. See the mic_gate_db / noise_words notes in
+# config.py for why this exists at all.
+_FLOOR_INIT = 90.0       # dBFS-ish start: wide open until the room is learned
+_FLOOR_RISE = 0.002      # how fast the floor follows the room getting louder
+_FLOOR_FALL = 0.050      # ...and how fast it follows it getting quieter
+_FLOOR_WARMUP = 33       # frames (~1s) of fast learning when the mic opens
+_FLOOR_MIN = 55.0        # never trust a floor quieter than this (digital silence)
+
+
+def _dbfs(frame: np.ndarray) -> float:
+    """One frame's RMS level, as dB below full scale, expressed POSITIVE
+    (so 40 is loud and 85 is near-silent). Positive because the floor
+    tracking below reads far better counting down than up."""
+    rms = float(np.sqrt(np.mean((frame.astype(np.float32) / 32768.0) ** 2)))
+    if rms <= 1e-9:
+        return 120.0
+    return -20.0 * np.log10(rms)
+
+
+class NoiseFloor:
+    """A continuously learned estimate of what this room's quiet sounds
+    like, so the gate threshold is relative rather than a magic number.
+
+    Asymmetric on purpose: it drops toward a NEW quieter floor quickly
+    (you stopped the fan, the gate should tighten) and creeps up toward a
+    louder one slowly (you started talking -- that is not the room, and a
+    fast-rising floor would quietly deafen the mic mid-sentence)."""
+
+    def __init__(self):
+        self.floor = _FLOOR_INIT
+        self.seen = 0
+
+    def update(self, level: float) -> None:
+        self.seen += 1
+        if self.seen <= _FLOOR_WARMUP:
+            # Converge hard on the first second so the gate is honest
+            # immediately; at the normal rates it took ~15s to learn a
+            # room from the wide-open start, and until then it gated
+            # nothing at all.
+            a = 0.3
+        else:
+            a = _FLOOR_RISE if level < self.floor else _FLOOR_FALL
+        self.floor += (level - self.floor) * a
+        self.floor = min(self.floor, 120.0)
+
+    def opens(self, level: float, margin_db: float) -> bool:
+        """True when this frame is margin_db louder than the room."""
+        if margin_db <= 0:
+            return True
+        return level < max(self.floor, _FLOOR_MIN) - margin_db
+
+
+def is_noise_word(text: str) -> bool:
+    """True when a transcript is nothing but one filler/courtesy word --
+    what Whisper reliably produces when handed a thump. Checked only
+    against the WHOLE transcript, so "okay, deploy it" is untouched."""
+    words = CFG.get("noise_words") or []
+    if not words:
+        return False
+    bare = re.sub(r"[^a-z\s']", "", text.lower()).strip()
+    return bare in {re.sub(r"[^a-z\s']", "", w.lower()).strip() for w in words}
 
 _model = None
 _model_lock = threading.Lock()
@@ -360,6 +427,8 @@ class Ears:
         speech_total = 0
         in_utterance = False
         elapsed = 0.0
+        floor = NoiseFloor()
+        margin = float(CFG.get("mic_gate_db") or 0.0)
 
         with _open_mic() as stream:
             while True:
@@ -374,7 +443,14 @@ class Ears:
                     # speakers are talking and barge-in isn't on: ignore
                     ring.clear()
                     continue
-                is_speech = self.vad.is_speech(mono.tobytes(), RATE)
+                # The gate: webrtcvad says "is this speech-SHAPED", the
+                # floor says "is this loud enough to be THIS room's
+                # speech". A knock passes the first and fails the second.
+                level = _dbfs(mono)
+                if not in_utterance:
+                    floor.update(level)
+                is_speech = (self.vad.is_speech(mono.tobytes(), RATE)
+                             and floor.opens(level, margin))
                 if not in_utterance:
                     ring.append(mono)
                     if len(ring) > 8:
@@ -400,7 +476,17 @@ class Ears:
                             frames, ring = [], []
                             speech_run = speech_total = 0
                             continue
-                        return transcribe(np.concatenate(frames))
+                        text = transcribe(np.concatenate(frames))
+                        if text and is_noise_word(text):
+                            # Whisper's signature output for a thump that
+                            # cleared every earlier check. Drop it and
+                            # keep the mic open rather than answering it.
+                            log(f"[ears] gated noise transcript: {text!r}")
+                            in_utterance = False
+                            frames, ring = [], []
+                            speech_run = speech_total = 0
+                            continue
+                        return text
 
 
 def record_held(is_held, max_s: float = 60.0, min_s: float = 0.25) -> str | None:
@@ -418,7 +504,15 @@ def record_held(is_held, max_s: float = 60.0, min_s: float = 0.25) -> str | None
             frames.append(block[:, 0].copy())
     if len(frames) * FRAME_MS / 1000 < min_s:
         return None
-    return transcribe(np.concatenate(frames))
+    text = transcribe(np.concatenate(frames))
+    # No noise FLOOR here -- the button is the gate, and second-guessing a
+    # deliberate press would eat quiet speech. The junk-transcript filter
+    # still applies: a key held through a desk knock produces the same
+    # hallucinated "Thank you." it does on the open mic.
+    if text and is_noise_word(text):
+        log(f"[ears] gated noise transcript: {text!r}")
+        return None
+    return text
 
 
 if __name__ == "__main__":
