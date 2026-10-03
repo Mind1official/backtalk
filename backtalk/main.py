@@ -64,7 +64,7 @@ import threading
 import time
 
 from backtalk import signals
-from backtalk.brain import WarmBrain
+from backtalk.brain import BrainStalled, WarmBrain, resume_verdict
 from backtalk.config import CFG
 from backtalk.ears import (Ears, explain_audio_failure, record_held,
                            warm as warm_ears)
@@ -646,6 +646,15 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
             # will ever dequeue, so nothing resets the bus — park it here.
             signals.static_stop()
             signals.set_state("idle")
+    except BrainStalled:
+        # The watchdog fired and the brain is already rebuilt. Say so,
+        # out loud: silence is the exact failure this exists to end.
+        if batch:
+            mouth.say_chunk(" ".join(batch), pending)
+        signals.static_stop()
+        mouth.say("I lost the thread there. The brain went quiet, so I "
+                  "restarted it. Say that again?")
+        signals.set_state("idle")
     except asyncio.CancelledError:
         try:
             await brain.interrupt()
@@ -677,12 +686,22 @@ async def amain():
                 resume_id = f.read().strip() or None
         except OSError:
             resume_id = None
+    # SMART RESUME: only reopen a light conversation (resume_max_mb)
+    skipped = None
+    if CFG.get("resume_last_session"):
+        ok, why = resume_verdict(resume_id)
+        log(f"[brain] smart resume: {'reattaching' if ok else 'fresh'} ({why})")
+        if not ok:
+            skipped = (why, resume_id) if resume_id else None
+            resume_id = None
 
     mouth = Mouth()
     ears = Ears(silence_ms=CFG["silence_ms"])
     brain = WarmBrain(model=model,
                       can_use_tool=make_permission_gate(mouth),
                       resume_id=resume_id)
+    if skipped:
+        brain.skipped_resume(*skipped)
 
     mode = ("hands-free listening (the talk key still works)"
             if _MIC["mode"] == "open"

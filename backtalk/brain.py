@@ -51,6 +51,108 @@ _SENTENCE_END = re.compile(r"(?<=[.!?])\s")
 SESSION_FILE = os.path.join(CFG["signals_dir"], ".backtalk_session")
 
 
+class BrainStalled(Exception):
+    """A reply went silent past the watchdog limit. The brain has
+    already been rebuilt by the time this reaches the caller."""
+
+
+def _transcript_path(session_id: str) -> str:
+    """Where the CLI keeps a session's transcript: one folder per cwd,
+    named by swapping every non-alphanumeric character for '-'."""
+    root = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude")
+    slug = re.sub(r"[^A-Za-z0-9]", "-", os.path.abspath(CFG["agent_dir"]))
+    return os.path.join(root, "projects", slug, f"{session_id}.jsonl")
+
+
+def resume_verdict(session_id: str | None) -> tuple[bool, str]:
+    """Smart resume: reopen a saved session only while it is light.
+    Returns (resume?, reason for the log)."""
+    if not session_id:
+        return False, "no saved session"
+    cap = float(CFG.get("resume_max_mb") or 0)
+    try:
+        mb = os.path.getsize(_transcript_path(session_id)) / 1048576
+    except OSError:
+        return False, "saved session transcript not found"
+    if cap and mb > cap:
+        return False, f"saved session is {mb:.1f} MB (cap {cap:g} MB)"
+    return True, f"saved session is {mb:.1f} MB"
+
+
+def _spoken_tail(n: int = 20) -> list[str]:
+    """The last n spoken lines ([you] and the agent's) of the most recent
+    voice session in logs/backtalk.log. A session starts at its
+    "[backtalk] up" line, so called before this launch logs its own,
+    that is the previous session; called mid-session (watchdog), the
+    current one."""
+    from backtalk.vlog import LOG_PATH
+    try:
+        with open(LOG_PATH, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()[-3000:]
+    except OSError:
+        return []
+    for i in range(len(lines) - 1, -1, -1):
+        if "[backtalk] up" in lines[i]:
+            lines = lines[i:]
+            break
+    name = f"[{CFG.get('name') or 'agent'}]"
+    out = []
+    for ln in lines:
+        body = ln[20:].strip() if len(ln) > 20 else ln.strip()  # drop stamp
+        if body.startswith("[you]") or body.startswith(name):
+            body = re.sub(r"^(\[[^\]]+\])\s+\(\d+(\.\d+)?s to first\)",
+                          r"\1", body)
+            out.append(" ".join(body.split())[:220])
+    return out[-n:]
+
+
+def _action_tail(session_id: str | None, n: int = 10) -> list[str]:
+    """The agent's last n tool calls, from its OWN transcript (a shared
+    activity log would mix in other sessions' work)."""
+    if not session_id:
+        return []
+    import json
+    acts = []
+    try:
+        with open(_transcript_path(session_id), encoding="utf-8",
+                  errors="replace") as f:
+            for ln in f:
+                if '"tool_use"' not in ln or '"assistant"' not in ln:
+                    continue
+                try:
+                    msg = json.loads(ln).get("message") or {}
+                except ValueError:
+                    continue
+                for b in msg.get("content") or []:
+                    if not isinstance(b, dict) or b.get("type") != "tool_use":
+                        continue
+                    inp = b.get("input") or {}
+                    what = (inp.get("description") or inp.get("file_path")
+                            or inp.get("pattern") or inp.get("url")
+                            or inp.get("command") or "")
+                    acts.append(f"{b.get('name')}: {' '.join(str(what).split())[:160]}")
+    except OSError:
+        return []
+    return acts[-n:]
+
+
+def resume_notes(session_id: str | None) -> str:
+    """A small briefing for a fresh session that replaced one we did not
+    reopen: what was said last and what the agent was doing. Built from
+    records that already exist, so it survives a freeze, which never
+    gives the agent a chance to write anything itself. Capped at ~4 KB
+    so it can't bloat the new session."""
+    said, did = _spoken_tail(), _action_tail(session_id)
+    parts = []
+    if said:
+        parts.append("Last things said:\n" + "\n".join(said))
+    if did:
+        parts.append("Last actions taken:\n" + "\n".join(did))
+    text = "\n\n".join(parts) or "(no notes were recoverable)"
+    return text[-4000:]
+
+
 class WarmBrain:
     def __init__(self, model: str | None = None, can_use_tool=None,
                  resume_id: str | None = None):
@@ -72,6 +174,12 @@ class WarmBrain:
         # went sideways mid-stream, the wrong moment to gamble on
         # reattaching. (Community proposal, issue #1.)
         self._resume_id = resume_id
+        # The live session's id (from every ResultMessage), so a watchdog
+        # rebuild can reattach to THIS conversation rather than lose it.
+        self.session_id: str | None = None
+        # Set when a fresh session replaced one we chose not to reopen:
+        # the next query carries a one-line pointer to the agent's notes.
+        self._notes_hint: str | None = None
         # True while a query's response hasn't been consumed through its
         # ResultMessage — i.e. the shared message pipe may hold leftovers.
         self._dirty = False
@@ -183,10 +291,11 @@ class WarmBrain:
         """Persist the session id after a completed turn, so the next
         launch can reattach (config: resume_last_session). Must never
         break a turn; silence on any failure."""
-        if not CFG.get("resume_last_session"):
-            return
         sid = getattr(rm, "session_id", None)
         if not sid:
+            return
+        self.session_id = sid
+        if not CFG.get("resume_last_session"):
             return
         try:
             with open(SESSION_FILE, "w") as f:
@@ -350,13 +459,79 @@ class WarmBrain:
             await self._client.disconnect()
             self._client = None
 
+    def skipped_resume(self, reason: str, session_id: str | None = None):
+        """A fresh session replaced one we chose not to reopen (smart
+        resume at launch, or a watchdog rebuild): brief its first turn
+        on where things stood, so it doesn't start blind."""
+        notes = resume_notes(session_id)
+        self._notes_hint = (
+            f"[backtalk: the previous voice conversation was not reopened "
+            f"({reason}). Resume notes from it follow. Use them to pick up "
+            f"where things left off; check today's daily note for anything "
+            f"older.]\n{notes}\n[end of resume notes]")
+
+    async def _rebuild_after_stall(self):
+        """Tear down the hung CLI and stand the brain back up. Reattaches
+        to this same conversation while it is light enough (the hung
+        request never reached the transcript); a heavy one starts fresh
+        with the notes pointer instead. Never raises past here."""
+        sid = self.session_id
+        try:
+            await asyncio.wait_for(self._client.disconnect(), 10)
+        except Exception:
+            pass
+        self._client = None
+        ok, why = resume_verdict(sid)
+        self._resume_id = sid if ok else None
+        log(f"[watchdog] rebuilding the brain: "
+            f"{'reattaching' if ok else 'starting fresh'} ({why})")
+        if not ok and sid:
+            self.skipped_resume(why, sid)
+        await self.start()
+        self._dirty = False
+
     async def ask_stream(self, utterance: str):
-        """Yield complete sentences as they stream out of the model."""
+        """Yield complete sentences as they stream out of the model.
+
+        THE WATCHDOG: every wait for the next message is bounded. A model
+        request can hang with the connection open and no error (seen
+        twice in two days), and an unbounded wait strands the voice line
+        in silence forever. Text and thinking stream in constantly, so
+        quiet only means trouble when no tool is running; a running tool
+        gets the long limit. On a stall the brain is rebuilt and
+        BrainStalled is raised for the caller to say so out loud."""
         self._dirty = True             # in flight until its ResultMessage
+        if self._notes_hint:
+            utterance, self._notes_hint = (
+                f"{self._notes_hint}\n\n{utterance}", None)
         await self._client.query(utterance)
         buf = ""
-        async for msg in self._client.receive_response():
+        quiet = float(CFG.get("stall_timeout_s") or 0) or None
+        tool_quiet = float(CFG.get("tool_stall_timeout_s") or 0) or None
+        tools_open = 0                 # tool_use blocks without a result yet
+        stream = self._client.receive_response().__aiter__()
+        while True:
+            limit = tool_quiet if tools_open > 0 else quiet
+            try:
+                msg = await asyncio.wait_for(stream.__anext__(), limit)
+            except StopAsyncIteration:
+                break
+            except asyncio.TimeoutError:
+                log(f"[watchdog] no word from the brain in {limit:.0f}s "
+                    f"({'tool running' if tools_open else 'no tool running'})"
+                    f" — declaring the turn stalled")
+                await self._rebuild_after_stall()
+                raise BrainStalled()
             t = type(msg).__name__
+            if t in ("AssistantMessage", "UserMessage"):
+                blocks = getattr(msg, "content", None)
+                if isinstance(blocks, list):
+                    for b in blocks:
+                        n = type(b).__name__
+                        if n == "ToolUseBlock":
+                            tools_open += 1
+                        elif n == "ToolResultBlock":
+                            tools_open = max(0, tools_open - 1)
             if t == "StreamEvent":
                 ev = getattr(msg, "event", {}) or {}
                 if ev.get("type") == "content_block_delta":

@@ -115,6 +115,19 @@ DEFAULTS = {
     # A resume that fails falls back to a fresh session and says so in
     # the log. (Grew out of the same community proposal, issue #1.)
     "resume_last_session": False,
+    # SMART RESUME: a saved conversation whose transcript is bigger than
+    # this (MB) is NOT reopened; the launch starts fresh and the first
+    # turn tells the agent to check its notes instead. Heavy sessions
+    # (screenshots, inbox dumps) are exactly the ones that wedge on
+    # reattach. 0 = no cap.
+    "resume_max_mb": 1.5,
+    # THE WATCHDOG: if a reply goes this many seconds with no message
+    # from the brain, the turn is declared stalled, the hung CLI is torn
+    # down, and the session is rebuilt (smart resume rules apply). A
+    # running tool gets the longer limit, since a long build or render
+    # is silent by design. 0 disables.
+    "stall_timeout_s": 120,
+    "tool_stall_timeout_s": 1200,
     # Publish your Claude usage (the five-hour and weekly windows) on the
     # signal bus so a face can draw it. OFF by default and deliberately
     # so: this is your own account spend, and the faces this feeds are
