@@ -155,6 +155,10 @@ DEFAULTS = {
     #
     # NOT "stt_device" below, which is the Whisper COMPUTE device.
     "mic_device": "",
+    # How much trailing silence (ms) ends your turn and sends it to the
+    # brain. Lower feels snappier; higher gives more room to pause
+    # mid-sentence without getting cut off.
+    "silence_ms": 1000,
     # Optional premium voice: ElevenLabs on YOUR key. The key NEVER
     # goes in a file: it's read from the macOS Keychain (item
     # `backtalk-elevenlabs`) or Linux secret-tool, with the

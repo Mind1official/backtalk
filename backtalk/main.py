@@ -675,7 +675,7 @@ async def amain():
             resume_id = None
 
     mouth = Mouth()
-    ears = Ears()
+    ears = Ears(silence_ms=CFG["silence_ms"])
     brain = WarmBrain(model=model,
                       can_use_tool=make_permission_gate(mouth),
                       resume_id=resume_id)
