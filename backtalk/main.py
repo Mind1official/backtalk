@@ -332,8 +332,11 @@ CONSOLE_VERBS = {
                   "auto approve mode"),
     "ask":       ("start asking again", "ask before acting",
                   "ask for permission again"),
-    "answeronly_on":  ("go answer only mode",),
-    "answeronly_off": ("open mic mode",),
+    "answeronly_on":  ("go answer only mode", "answer only mode",
+                       "turn on answer only mode",
+                       "switch to answer only mode"),
+    "answeronly_off": ("open mic mode", "turn off answer only mode",
+                       "exit answer only mode"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
