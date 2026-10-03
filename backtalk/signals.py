@@ -182,7 +182,7 @@ def _player_cmd(path: str) -> list[str] | None:
         if which(cand):
             if cand == "ffplay":
                 return ["ffplay", "-nodisp", "-autoexit", "-loglevel",
-                        "quiet", "-volume", "12", "-af", "lowpass=f=4000",
+                        "quiet", "-volume", "9", "-af", "lowpass=f=4000",
                         path]
             return [cand, path]
     return None
