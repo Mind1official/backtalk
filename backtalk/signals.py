@@ -176,13 +176,14 @@ def set_rate_limit(window: str, utilization, resets_at):
 
 def _player_cmd(path: str) -> list[str] | None:
     if sys.platform == "darwin":
-        return ["afplay", "-v", "0.35", path]
+        return ["afplay", "-v", "0.12", path]
     for cand in ("ffplay", "aplay", "paplay"):
         from shutil import which
         if which(cand):
             if cand == "ffplay":
                 return ["ffplay", "-nodisp", "-autoexit", "-loglevel",
-                        "quiet", "-volume", "35", path]
+                        "quiet", "-volume", "12", "-af", "lowpass=f=4000",
+                        path]
             return [cand, path]
     return None
 
