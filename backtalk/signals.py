@@ -28,6 +28,8 @@ is the whole integration surface:
   .voice_context      JSON {used, total, free, pct, categories, ts} —
                       how full the context window is; only written when
                       show_context is on
+  .transcript_log     the conversation as plain lines, "YOU: ..." and
+                      "<NAME>: ...", appended live as each side speaks
 
 Written to signals_dir (default: the repo root). Visualizers built on
 this contract just work.
@@ -57,6 +59,10 @@ _DIRECTION_FILE = os.path.join(_DIR, ".voice_direction")
 _REPLY_DONE_FILE = os.path.join(_DIR, ".voice_reply_done")
 _RATE_LIMIT_FILE = os.path.join(_DIR, ".voice_rate_limits")
 _CONTEXT_FILE = os.path.join(_DIR, ".voice_context")
+_TRANSCRIPT_FILE = os.path.join(_DIR, ".transcript_log")
+_TRANSCRIPT_MAX_LINES = 200
+NL = chr(10)  # written through a name so this module never
+              # carries a bare escape that a patch tool can mangle
 
 _BH = CFG.get("barehands_state_dir") or ""
 _BH_STATE = os.path.join(_BH, "state") if _BH else ""
@@ -225,6 +231,56 @@ def set_context(used, total, categories=None):
     except OSError:
         pass
 
+
+
+_transcript_open: str | None = None
+
+
+def transcript(speaker: str, text: str, append: bool = False):
+    """Add a line to the conversation log a face can tail.
+
+    WHY THIS LIVES HERE and not in a Claude Code Stop hook: a hook that
+    reads the reply back out of the CLI's transcript file is reading a
+    file the CLI has not written yet when the hook fires, so it logs the
+    PREVIOUS turn's reply and the panel sits exactly one turn behind
+    forever. No amount of waiting fixes it — the write happens after
+    hooks complete. The voice line, by contrast, has the text in hand
+    the moment it speaks it. The only honest source is the speaker.
+
+    append=True extends the current speaker's last line instead of
+    starting a new one, so a reply that streams in sentence by sentence
+    reads as one paragraph that grows rather than a stack of fragments.
+    Pass append=False (or a different speaker) to start a fresh line.
+
+    Never raises: the bus must never crash the voice line.
+    """
+    global _transcript_open
+    line = " ".join(str(text).split()).strip()
+    if not line:
+        return
+    try:
+        lines = []
+        if os.path.exists(_TRANSCRIPT_FILE):
+            with open(_TRANSCRIPT_FILE, encoding="utf-8",
+                      errors="replace") as f:
+                lines = f.read().splitlines()
+        tag = f"{speaker}:"
+        if (append and _transcript_open == speaker and lines
+                and lines[-1].startswith(tag)):
+            lines[-1] = lines[-1] + " " + line
+        else:
+            lines.append(f"{tag} {line}")
+        _transcript_open = speaker
+        with open(_TRANSCRIPT_FILE, "w", encoding="utf-8") as f:
+            f.write(NL.join(lines[-_TRANSCRIPT_MAX_LINES:]) + NL)
+    except OSError:
+        pass
+
+
+def transcript_end():
+    """Close the open line, so the next write starts a new one."""
+    global _transcript_open
+    _transcript_open = None
 
 def _player_cmd(path: str) -> list[str] | None:
     if sys.platform == "darwin":

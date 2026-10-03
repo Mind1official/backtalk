@@ -620,10 +620,14 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
         if first:
             log(f"[{NAME}] ({time.time()-t0:.1f}s to first) {s}"
                 + (f"  <directions: {pending}>" if pending else ""))
+            # New line for a new turn, then grown in place below, so a
+            # face tailing the log watches the reply fill as it is said.
+            signals.transcript(NAME, s)
             mouth.say_chunk(s, pending)
             pending = []
             first = False
         else:
+            signals.transcript(NAME, s, append=True)
             log(f"[{NAME}] {s}" + (f"  <directions: {pending}>" if pending else ""))
             batch.append(s)
             if len(batch) >= 2:
@@ -964,6 +968,8 @@ async def amain():
             text = parts[1] if len(parts) > 1 else ""
             if not text:
                 return True
+        signals.transcript_end()
+        signals.transcript("YOU", text)
         signals.set_state("thinking")
         signals.static_start()
         # Clean the pipe: drain the interrupted turn's leftovers so the
