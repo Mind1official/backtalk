@@ -121,6 +121,12 @@ DEFAULTS = {
     # frequently on a stream or a shared screen. Nothing is collected at
     # all while this is false. (Community fix, ai-visualizer issue #1.)
     "show_usage": False,
+    # Publish how full the context window is on the signal bus, so a
+    # face can draw a fill meter. ON by default, unlike show_usage:
+    # this is only the size of the current conversation, not account
+    # spend, so it gives nothing away on a stream. Set false to keep it
+    # off the bus entirely.
+    "show_context": True,
     # Reasoning effort for the voice session: "" inherits the model's
     # default; "low" / "medium" / "high" / "max" applies at launch.
     # Saying "set effort to X" in a voice session saves itself here.

@@ -137,6 +137,48 @@ class WarmBrain:
         except Exception:
             return None
 
+    async def _publish_context(self):
+        """Put the context-window fill on the signal bus for the face.
+
+        The CLI's breakdown is the only honest source for the window
+        SIZE: it reports every category including "Free space" and the
+        autocompact buffer, so the categories sum to the whole window
+        while the occupied ones sum to what we are actually holding.
+        That is why total is a sum and not a constant — the window can
+        change under us with a model or setting change, and a hardcoded
+        number would quietly start lying.
+
+        Bounded and fully swallowed, like the rate-limit pull: a face
+        readout must never cost a turn. If this stops working the meter
+        just goes stale, and that is the intended failure.
+
+        Never raises."""
+        if not CFG.get("show_context"):
+            return
+        try:
+            ctx = await asyncio.wait_for(self.context_usage(), 5)
+            cats = (getattr(ctx, "categories", None)
+                    or (ctx or {}).get("categories") or [])
+            cats = [c for c in cats if isinstance(c, dict)]
+            if not cats:
+                return
+
+            def _tok(c):
+                try:
+                    return int(c.get("tokens") or 0)
+                except (TypeError, ValueError):
+                    return 0
+
+            def _spare(c):
+                n = str(c.get("name", "")).lower()
+                return "free" in n or "buffer" in n
+
+            total = sum(_tok(c) for c in cats)
+            used = sum(_tok(c) for c in cats if not _spare(c))
+            signals.set_context(used, total, cats)
+        except Exception:
+            pass
+
     def _remember_session(self, rm):
         """Persist the session id after a completed turn, so the next
         launch can reattach (config: resume_last_session). Must never
@@ -346,6 +388,7 @@ class WarmBrain:
                 self._tally(msg)
                 self._remember_session(msg)
                 await self._pull_rate_limits()
+                await self._publish_context()
                 break
         tail = buf.strip()
         if tail:

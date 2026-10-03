@@ -25,6 +25,9 @@ is the whole integration surface:
   .voice_loading_pid  exists while the thinking sound is playing
   .voice_rate_limits  JSON {window: {utilization, resets_at}} — only
                       written when show_usage is on
+  .voice_context      JSON {used, total, free, pct, categories, ts} —
+                      how full the context window is; only written when
+                      show_context is on
 
 Written to signals_dir (default: the repo root). Visualizers built on
 this contract just work.
@@ -53,6 +56,7 @@ _LOADING_PID_FILE = os.path.join(_DIR, ".voice_loading_pid")
 _DIRECTION_FILE = os.path.join(_DIR, ".voice_direction")
 _REPLY_DONE_FILE = os.path.join(_DIR, ".voice_reply_done")
 _RATE_LIMIT_FILE = os.path.join(_DIR, ".voice_rate_limits")
+_CONTEXT_FILE = os.path.join(_DIR, ".voice_context")
 
 _BH = CFG.get("barehands_state_dir") or ""
 _BH_STATE = os.path.join(_BH, "state") if _BH else ""
@@ -170,6 +174,54 @@ def set_rate_limit(window: str, utilization, resets_at):
     try:
         with open(_RATE_LIMIT_FILE, "w") as f:
             f.write(json.dumps(_rate_limits))
+    except OSError:
+        pass
+
+
+def set_context(used, total, categories=None):
+    """How full the context window is, for a face to draw.
+
+    `used` and `total` are token counts; `categories` is the CLI's own
+    breakdown (a list of {name, tokens}) passed straight through so a
+    face can show where the window went. `pct` is precomputed as a 0..1
+    fraction because every consumer wants it and none of them should
+    have to guess which categories count as occupied.
+
+    Separate from set_rate_limit on purpose. Rate limits are account
+    SPEND and stay behind show_usage; this is just how full the current
+    conversation is, which leaks nothing about the account. It still has
+    its own switch (show_context) so a face pointed at a camera can be
+    told to keep quiet about it.
+
+    Never raises."""
+    try:
+        used = int(used or 0)
+        total = int(total or 0)
+    except (TypeError, ValueError):
+        return
+    if total <= 0:
+        return
+    payload = {"used": used, "total": total,
+               "free": max(total - used, 0),
+               "pct": round(min(used / total, 1.0), 4),
+               "ts": time.time()}
+    if categories:
+        clean = []
+        for c in categories:
+            if not isinstance(c, dict):
+                continue
+            name = str(c.get("name") or "").strip()
+            try:
+                tok = int(c.get("tokens") or 0)
+            except (TypeError, ValueError):
+                continue
+            if name:
+                clean.append({"name": name, "tokens": tok})
+        if clean:
+            payload["categories"] = clean
+    try:
+        with open(_CONTEXT_FILE, "w") as f:
+            f.write(json.dumps(payload))
     except OSError:
         pass
 
