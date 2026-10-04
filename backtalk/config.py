@@ -150,7 +150,20 @@ DEFAULTS = {
     # decaying peak so the bars stay lively at any volume, which on a
     # loud source pins them all near the top; this scales them back
     # down afterwards. 1.0 is full height.
+    # after music mode ends on quiet, re-entry only needs this much
+    # sound (instead of music_enter_s) for the next 30 s, so a gap
+    # between tracks does not cost a full minute. It also needs a
+    # gap-free recent window, so a sentence cannot trigger it.
+    "music_reenter_s": 12,
     "music_gain": 0.6,
+    # how many dB below the current peak reads as zero bar height.
+    # Smaller is punchier (only the loudest bands show), larger shows
+    # more of the quiet detail.
+    "music_db_range": 45,
+    # how fast that peak falls, per spectrum publish (~8/s). Closer
+    # to 1.0 holds the loudest recent peak longer, so the bars react
+    # more slowly; lower makes them snap back to the current volume.
+    "music_peak_decay": 0.995,
     # REMOTE VOICE (remote.py): a hold-to-talk page for a phone or
     # tablet, served on 127.0.0.1 only and reached from outside through
     # a Cloudflare Tunnel with Access in front. OFF by default. Two locks:

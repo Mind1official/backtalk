@@ -38,7 +38,7 @@ class MusicDetector:
     def __init__(self, rate: int):
         self.rate = rate
         self.enter_s = float(CFG.get("music_enter_s") or 60)
-        self.reenter_s = 5.0
+        self.reenter_s = float(CFG.get("music_reenter_s") or 12)
         self.exit_quiet_s = float(CFG.get("music_exit_quiet_s") or 3)
         self.gap_frames = max(1, int(0.35 / FRAME_S))
         self.exit_gaps, self.exit_window = 3, 8.0
@@ -52,9 +52,11 @@ class MusicDetector:
         self.sound_run = 0              # frames of unbroken sound
         self._left_quiet_at = -10**9    # when we last exited on quiet
         self._spec_buf: list = []
-        self._peak = 1e-6
+        self._peak = -120.0
         self._pub_every = 4             # spectrum every 4 frames (~8/s)
         self.gain = float(CFG.get("music_gain") or 0.6)
+        self.decay = float(CFG.get("music_peak_decay") or 0.995)
+        self.db_range = float(CFG.get("music_db_range") or 45)
 
     @property
     def sound_run_s(self) -> float:
@@ -88,7 +90,11 @@ class MusicDetector:
             self._gaps.popleft()
 
         if not self.on:
-            quick = (self._i - self._left_quiet_at) * FRAME_S < 30
+            # the quick re-entry is for a gap between tracks. A sentence
+            # must not sneak through it, so it also needs a clean recent
+            # window: speech leaves gaps behind it, a track change does not.
+            quick = ((self._i - self._left_quiet_at) * FRAME_S < 30
+                     and not self._gaps)
             need = self.reenter_s if quick else self.enter_s
             if self.sound_run_s >= need:
                 self._set(True, f"{self.sound_run_s:.0f}s of unbroken sound")
@@ -136,12 +142,15 @@ class MusicDetector:
         bands = np.array([mag[(freqs >= lo) & (freqs < hi)].mean()
                           if np.any((freqs >= lo) & (freqs < hi)) else 0.0
                           for lo, hi in zip(edges[:-1], edges[1:])])
-        bands = np.log1p(bands * 50)
-        # a slowly decaying peak keeps the bars full-height at any volume
-        self._peak = max(float(bands.max()), self._peak * 0.995, 1e-6)
-        # The peak normalisation above deliberately fills the bars at any
-        # volume, which on a loud source pins every band near the top.
-        # music_gain scales the normalised bands back down afterwards so
-        # the visualizer has somewhere to go: 1.0 is the old behaviour.
-        out = np.clip(bands / self._peak * self.gain, 0, 1)
+        # In dB, not log1p: log1p(mag*50) squashed every band to nearly
+        # the same number, so dividing by the peak drew all 32 spokes at
+        # full length no matter what was playing. A dB floor keeps the
+        # real distance between a loud band and a quiet one.
+        db = 20 * np.log10(bands + 1e-9)
+        # a slowly decaying peak keeps the bars lively at any volume
+        self._peak = max(float(db.max()), self._peak * self.decay
+                         + db.max() * (1 - self.decay), -120.0)
+        # everything db_range below the peak reads as zero height
+        out = (db - (self._peak - self.db_range)) / self.db_range
+        out = np.clip(out, 0, 1) * self.gain
         signals.set_music(True, out.round(3).tolist())
