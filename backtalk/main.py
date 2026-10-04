@@ -1015,15 +1015,38 @@ async def amain():
             saved = _write_config_key("permission_mode",
                                       "bypassPermissions")
             _AUTOAPPROVE["on"] = True
+            # The gate flag alone is not enough: an "ask"-booted session
+            # runs the SDK in its "default" mode, where the CLI decides
+            # some calls before our gate is ever consulted -- so the
+            # prompts kept coming until a restart read the new config.
+            # Flip the LIVE session too, exactly as the "ask" verb does
+            # in the other direction.
+            flipped = True
+            try:
+                await brain.set_permission_mode("bypassPermissions")
+            except Exception as e:
+                flipped = False
+                log(f"[console] live flip to bypass FAILED: {e}")
             log("[console] permission_mode -> bypassPermissions"
-                + (" (saved)" if saved else " (session only)"))
-            mouth.say(("Auto-approve on, and saved as your default. "
-                       if saved else
-                       "Auto-approve on for this session. The config "
-                       "file couldn't be written, so it won't stick "
-                       "past a restart. ")
-                      + "Say start asking again any time to flip it "
-                        "back.")
+                + (" (saved)" if saved else " (session only)")
+                + ("" if flipped else " (LIVE FLIP FAILED)"))
+            if not flipped:
+                # Saying "auto-approve on" when the live session still
+                # gates would be the same lie in reverse.
+                mouth.say("I couldn't switch this session, so I'll "
+                          "keep asking until you restart me. It is "
+                          "saved as your default."
+                          if saved else
+                          "I couldn't switch this session and couldn't "
+                          "save it either. Still asking.")
+            else:
+                mouth.say(("Auto-approve on, and saved as your "
+                           "default. " if saved else
+                           "Auto-approve on for this session. The "
+                           "config file couldn't be written, so it "
+                           "won't stick past a restart. ")
+                          + "Say start asking again any time to flip "
+                            "it back.")
         elif verb == "music_on":
             resp = ""
             # Said with the talk key held, or before the music starts:
