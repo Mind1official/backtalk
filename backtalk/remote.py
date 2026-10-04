@@ -253,6 +253,18 @@ class Remote:
     async def _send(self, obj):
         self._post(obj)
 
+    def post_ask(self, text: str | None) -> None:
+        """Put a pending permission question on the phone as a card with
+        Approve/Deny, or clear it with None. Thread-safe like the rest of
+        the outbound side: it goes through the same send queue.
+
+        The phone's buttons answer through the EXISTING typed path (they
+        send the literal word "yes"/"no"), so the gate in main.py needs
+        no second answering mechanism -- one place decides, one place
+        normalizes, and a tap and a spoken yes cannot disagree."""
+        if self.active():
+            self._post({"t": "ask", "data": text})
+
     async def _on_text(self, m):
         t = m.get("t")
         if t == "auth":
@@ -275,6 +287,14 @@ class Remote:
             self.last_seen = time.time()
             if self.mouth.speaking:
                 self.mouth.shut_up()    # barge-in: a finger on the glass
+        elif t == "answer" and STATE["active"]:
+            # A tapped Approve/Deny. It is fed in as plain words on the
+            # same queue as a typed line, so the spoken gate's own
+            # vocabulary and its deny-by-default rule still decide.
+            word = "yes" if str(m.get("data")) == "yes" else "no"
+            self.last_seen = time.time()
+            log(f"[remote] permission answered by tap: {word}")
+            self.typed_q.put(word)
         elif t == "bye":
             await self._end("signed off on the phone")
             await self._hello()

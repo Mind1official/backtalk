@@ -54,6 +54,20 @@
   #keys button.wide { font:700 14px system-ui; letter-spacing:.1em; color:var(--muted); }
   #padmsg { color:var(--muted); font-size:14px; text-align:center; min-height:20px; }
   #padmsg.bad { color:var(--glow); }
+  #ask { position:fixed; left:0; right:0; bottom:0; z-index:6; display:none;
+         padding:22px 18px calc(22px + env(safe-area-inset-bottom));
+         background:#15151b; border-top:1px solid var(--accent);
+         box-shadow:0 -18px 40px rgba(0,0,0,.6); }
+  #ask.on { display:block; }
+  #asklabel { font:700 11px system-ui; letter-spacing:.16em; color:var(--muted);
+              text-transform:uppercase; margin-bottom:8px; }
+  #asktext { font-size:19px; line-height:1.35; margin-bottom:18px; }
+  #askrow { display:flex; gap:12px; }
+  #askrow button { flex:1; font:800 16px system-ui; letter-spacing:.06em; border:0;
+                   border-radius:14px; padding:18px 0; color:#fff; }
+  #yes { background:var(--accent); }
+  #no  { background:#2c2c35; color:var(--text); }
+  #askrow button:active { filter:brightness(1.35); }
 </style>
 </head>
 <body>
@@ -75,6 +89,11 @@
     <button class="wide" data-k="enter">ENTER</button>
   </div>
   <div id="padmsg">Enter your PIN</div>
+</div>
+<div id="ask">
+  <div id="asklabel">Needs your OK</div>
+  <div id="asktext"></div>
+  <div id="askrow"><button id="no">NO</button><button id="yes">YES</button></div>
 </div>
 <div id="log"></div>
 <script>
@@ -161,6 +180,27 @@ $("keys").addEventListener("click", (e) => {
   if (pin.length === PIN_MAX) sendPin();
 });
 
+// ---------- a permission ask, answered with a thumb ----------
+// The buttons send plain words on the same channel a typed line uses,
+// so the PC's gate still decides. Holding the orb and saying yes works
+// exactly as before -- this is a shortcut, not a second authority.
+function showAsk(text) {
+  if (text) {
+    $("asktext").textContent = text;
+    $("ask").className = "on";
+    if (navigator.vibrate) navigator.vibrate([12, 60, 12]);
+  } else {
+    $("ask").className = "";
+  }
+}
+function answerAsk(word) {
+  if (ws.readyState === 1) ws.send(JSON.stringify({ t: "answer", data: word }));
+  showAsk(null);
+  setStatus("Sending", "");
+}
+$("yes").onclick = () => answerAsk("yes");
+$("no").onclick = () => answerAsk("no");
+
 // ---------- socket ----------
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
@@ -176,7 +216,7 @@ function connect() {
     switch (m.t) {
       case "hello":
         name = d.name; authed = false; $("bye").style.display = "none";
-        showPad(true);
+        showPad(true); showAsk(null);
         if (d.locked) lock(d.locked); else { idleHint(); padMsg("Enter your PIN"); }
         if (!d.has_passcode) { showPad(false); setStatus("Not set up", "No PIN is set on the PC yet."); }
         break;
@@ -193,7 +233,8 @@ function connect() {
           } else { idleHint(); padMsg("Enter your PIN"); }
         }
         break;
-      case "locked": lock(d); break;
+      case "ask": showAsk(d); break;
+      case "locked": showAsk(null); lock(d); break;
       case "state":
         if (!holding) {
           orb(d === "speaking" ? "speaking" : d === "thinking" ? "thinking" : "idle");
@@ -255,7 +296,7 @@ stage.addEventListener("contextmenu", (e) => e.preventDefault());
 
 $("bye").onclick = () => {
   if (ws.readyState === 1) ws.send(JSON.stringify({ t: "bye" }));
-  sessionStorage.removeItem("vl_token"); authed = false; flush(); showPad(true);
+  sessionStorage.removeItem("vl_token"); authed = false; flush(); showPad(true); showAsk(null);
 };
 
 // Browsers only allow the mic and audio after a real tap, so one tap opens both.

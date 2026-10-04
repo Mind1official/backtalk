@@ -108,6 +108,12 @@ _INTERRUPT_ANSWER = "\x00interrupt"      # sentinel: turn is being killed
 # LISTENING is about the microphone: see _MIC below. Two different
 # axes, deliberately never sharing a name.)
 _AUTOAPPROVE = {"on": False}
+# The remote server, once it exists. The permission gate is built before
+# it, so it cannot capture it directly -- this holder lets a pending ask
+# appear on the phone as Approve/Deny buttons instead of forcing someone
+# to hold the button and SAY yes. The taps answer through the ordinary
+# typed path, so the gate's vocabulary and its deny-by-default still rule.
+_REMOTE = {"srv": None}
 # The microphone mode, switchable live by voice. "ptt" = mic closed
 # except while the key is held. "open" = hands-free listening (VAD).
 # The key keeps working in open mode: it interrupts, and holding it
@@ -250,6 +256,11 @@ def make_permission_gate(mouth):
             ask += (" And any time you're done with these checks, say "
                     "stop asking for permission.")
         mouth.say(ask)
+        # On the phone: the SHORT form only. The full literal command
+        # stays in the log and behind "details" -- nobody wants to read
+        # a shell line on a handset to decide a yes or no.
+        if _REMOTE["srv"] is not None:
+            _REMOTE["srv"].post_ask(what)
         answer = None
         try:
             deadline = loop.time() + PERM_TIMEOUT_S
@@ -267,6 +278,8 @@ def make_permission_gate(mouth):
                             fut.cancel()
                             mouth.say("No answer, so I didn't do it.")
                             log("[perm]   timed out, denied")
+                            if _REMOTE["srv"] is not None:
+                                _REMOTE["srv"].post_ask(None)
                             return PermissionResultDeny(
                                 behavior="deny",
                                 message="No spoken answer within the "
@@ -289,6 +302,8 @@ def make_permission_gate(mouth):
                 answer = got
         finally:
             _PERM["fut"] = None
+            if _REMOTE["srv"] is not None:
+                _REMOTE["srv"].post_ask(None)
         if answer == _INTERRUPT_ANSWER:
             log("[perm]   turn interrupted, denied silently")
             return PermissionResultDeny(
@@ -822,6 +837,7 @@ async def amain():
             "false). Nothing could reach this instance, so stopping.")
         await brain.stop()
         raise SystemExit(1)
+    _REMOTE["srv"] = remote_srv
     typed_fut: asyncio.Future | None = None
 
     async def run_console(verb):
