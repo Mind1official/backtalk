@@ -59,6 +59,8 @@ _DIRECTION_FILE = os.path.join(_DIR, ".voice_direction")
 _REPLY_DONE_FILE = os.path.join(_DIR, ".voice_reply_done")
 _RATE_LIMIT_FILE = os.path.join(_DIR, ".voice_rate_limits")
 _CONTEXT_FILE = os.path.join(_DIR, ".voice_context")
+_PROMPT_FILE = os.path.join(_DIR, ".voice_prompt")
+_TYPED_FILE = os.path.join(_DIR, ".voice_typed")
 _TRANSCRIPT_FILE = os.path.join(_DIR, ".transcript_log")
 _TRANSCRIPT_MAX_LINES = 200
 NL = chr(10)  # written through a name so this module never
@@ -371,3 +373,60 @@ def static_stop():
         os.remove(_LOADING_PID_FILE)
     except OSError:
         pass
+
+# --- typed input from the face (our fork) -----------------------------------
+# Two files, one inbound and one outbound, so the agent can ask for something
+# typed instead of spoken and get it back through the normal turn pipeline:
+#
+#   .voice_prompt   WE write it. Non-empty = "an answer is wanted", and the
+#                   text is the question. ai-visualizer shows an input box
+#                   with that label; empty or absent means no box at all, so
+#                   the face stays clean until there is actually a question.
+#   .voice_typed    THEY write it. One line per submission, consumed and
+#                   truncated by the reader in main.py, which also clears
+#                   .voice_prompt so the box disappears the moment it is
+#                   answered rather than lingering after the fact.
+#
+# Deliberately a file pair rather than a socket: the whole bus is files, so
+# this needs no new port, no CORS, and it survives either side restarting.
+
+
+def prompt(text=None):
+    """Ask for a typed answer, or clear the request with no argument.
+
+    Safe to call when nothing is listening -- the file simply sits there,
+    and a face that is not running cannot miss anything it will not be
+    shown later anyway."""
+    try:
+        if text:
+            with open(_PROMPT_FILE, "w", encoding="utf-8") as f:
+                f.write(str(text).strip()[:200])
+        else:
+            try:
+                os.remove(_PROMPT_FILE)
+            except FileNotFoundError:
+                pass
+    except OSError:
+        pass
+
+
+def prompt_clear():
+    prompt(None)
+
+
+def take_typed():
+    """Lines submitted from a face since the last call, oldest first.
+
+    Reads and TRUNCATES in one pass so a line can never be delivered twice,
+    and returns [] on any error -- a missing or half-written file must never
+    take down the voice line."""
+    try:
+        with open(_TYPED_FILE, "r+", encoding="utf-8") as f:
+            body = f.read()
+            if not body.strip():
+                return []
+            f.seek(0)
+            f.truncate()
+    except OSError:
+        return []
+    return [ln.strip() for ln in body.splitlines() if ln.strip()]

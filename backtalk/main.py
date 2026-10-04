@@ -603,6 +603,29 @@ def _typed_reader_simple(q: "queue.Queue[str]"):
             q.put(line)
 
 
+def _typed_file_reader(q: "queue.Queue[str]"):
+    """Typed lines arriving from the FACE rather than this terminal (our fork).
+
+    ai-visualizer writes them into .voice_typed; signals.take_typed() reads
+    and truncates in one pass. They go onto the same queue as a line typed
+    here, which is the whole point: a face-typed line is a first-class turn
+    with a spoken reply, and main's loop needs no second code path.
+
+    Polled rather than watched because the bus is a plain folder that may be
+    on another drive -- 4x a second is imperceptible to a human typing and
+    costs a stat on an empty file. The prompt is cleared here, next to the
+    read, so the input box cannot linger after it has been answered."""
+    while True:
+        try:
+            for line in signals.take_typed():
+                log(f"[face] typed: {line[:80]}")
+                signals.prompt_clear()
+                q.put(line)
+        except Exception as e:                      # never kill the thread
+            log(f"[face] typed reader error: {e}")
+        time.sleep(0.25)
+
+
 def _typed_reader(q: "queue.Queue[str]"):
     """Terminal stdin -> typed messages (daemon thread). Typed lines are
     first-class turns: same pipeline as a spoken utterance, spoken reply.
@@ -890,6 +913,10 @@ async def amain():
     speak_task: asyncio.Task | None = None
     typed_q: "queue.Queue[str]" = queue.Queue()
     threading.Thread(target=_typed_reader, args=(typed_q,), daemon=True).start()
+    # Our fork: the same queue, fed from the visualizer's input box.
+    threading.Thread(target=_typed_file_reader, args=(typed_q,),
+                     daemon=True).start()
+    signals.prompt_clear()   # a prompt from a previous run is never current
 
     # REMOTE VOICE: while a phone holds the floor, permissions drop to
     # "ask" (answered from the phone), and come back as they were after.
