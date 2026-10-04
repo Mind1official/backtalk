@@ -72,7 +72,14 @@
                    border-radius:14px; padding:18px 0; color:#fff; }
   #yes { background:var(--accent); }
   #no  { background:#2c2c35; color:var(--text); }
-  #askrow button:active { filter:brightness(1.35); }
+  #askrow button:active, #askrow2 button:active { filter:brightness(1.35); }
+  /* The widening answer sits on its own row, quieter than YES and
+     deliberately wordy: a button that changes what can run unasked
+     should never be mistakable for the one-time yes beside it. */
+  #askrow2 { display:flex; margin-top:10px; }
+  #askrow2 button { flex:1; font:700 12px system-ui; letter-spacing:.08em; border:0;
+                    padding:12px; border-radius:12px; color:var(--muted);
+                    background:#1b1b22; }
 </style>
 </head>
 <body>
@@ -99,6 +106,7 @@
   <div id="asklabel">Needs your OK</div>
   <div id="asktext"></div>
   <div id="askrow"><button id="no">NO</button><button id="yes">YES</button></div>
+  <div id="askrow2"><button id="always">YES, AND STOP ASKING FOR THIS</button></div>
 </div>
 <div id="log"></div>
 <script>
@@ -205,6 +213,9 @@ function answerAsk(word) {
 }
 $("yes").onclick = () => answerAsk("yes");
 $("no").onclick = () => answerAsk("no");
+// Sends a word the PC's gate already understands, like the other two --
+// the widening is decided and persisted there, never here.
+$("always").onclick = () => answerAsk("always");
 
 // ---------- socket ----------
 function connect() {

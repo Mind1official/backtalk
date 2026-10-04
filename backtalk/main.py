@@ -143,6 +143,12 @@ _YES = {"yes", "yeah", "yep", "yup", "sure", "approve", "approved",
         "yes go ahead", "go for it", "green light", "okay", "ok", "y",
         "permission granted", "granted", "you have permission",
         "you may", "allowed", "allow it", "confirmed", "affirmative"}
+# Binaries whose first word says nothing about what they do. A rule for
+# one of these has to name the subcommand too (see _perm_rule).
+_SUBCOMMAND_TOOLS = {"git", "gh", "npm", "npx", "pnpm", "yarn", "pip",
+                     "pip3", "docker", "cargo", "go", "dotnet", "py",
+                     "python", "python3", "winget", "choco", "aws",
+                     "wrangler", "kubectl", "systemctl", "sc", "net"}
 _CHAIN_MARKS = ("&&", "||", ";", "|", "$(", "`", "\n")
 
 
@@ -196,6 +202,75 @@ def _human_what(tool, tool_input, ctx):
         return f"read a web page at {host}"
     name = getattr(ctx, "display_name", None) or tool
     return f"use the {name} tool"
+
+
+# "ALWAYS" on the phone card (and these words by voice): approve THIS
+# call, and pre-approve its whole kind by writing a rule into the
+# agent's settings allowlist so the gate stops firing for it. The word
+# list is deliberately small and unambiguous -- a vague "fine" must
+# never silently widen what can run unasked.
+_ALWAYS = {"always", "yes always", "always allow", "allow always",
+           "stop asking for this", "stop asking for this kind",
+           "don t ask again", "do not ask again", "never ask again"}
+
+
+def _perm_rule(tool, tool_input):
+    """The allowlist rule that covers this call's KIND, or None if we
+    can't name one safely. Deliberately narrow: a shell rule is scoped
+    to the single leading executable, never the whole Bash tool, so
+    approving one `git status` can never also pre-approve `rm`. A
+    chained command gets NO rule at all -- its parts are unknowable
+    from the first word, and that is exactly the case worth asking
+    about every time."""
+    d = tool_input or {}
+    if tool in ("Bash", "PowerShell"):
+        cmd = " ".join(str(d.get("command", "")).split())
+        if any(m in cmd for m in _CHAIN_MARKS):
+            return None
+        parts = cmd.split()
+        first = (parts or [""])[0].rsplit("/", 1)[-1]
+        if not first or not all(c.isalnum() or c in "-_." for c in first):
+            return None
+        # Multi-verb tools MUST carry their subcommand into the rule.
+        # Scoping to the bare executable would turn one approved
+        # `git status` into standing permission for `git push` -- the
+        # verb is where the danger lives, not the binary.
+        if first in _SUBCOMMAND_TOOLS:
+            sub = parts[1] if len(parts) > 1 else ""
+            if not sub or not sub.replace("-", "").isalnum():
+                return None
+            return f"{tool}({first} {sub}:*)"
+        return f"{tool}({first}:*)"
+    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        return None     # writing files is never blanket-approved here
+    return tool if tool.isidentifier() else None
+
+
+def _add_allow_rule(rule):
+    """Append a rule to the allowlist in the agent's settings.json.
+    Returns True on a persisted write. A file that fails to parse is
+    left alone rather than rewritten from scratch."""
+    from pathlib import Path
+    sp = Path(CFG.get("agent_dir") or ".") / ".claude" / "settings.json"
+    try:
+        data = json.loads(sp.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError) as e:
+        log(f"[perm]   settings not writable/parsable: {e}")
+        return False
+    perms = data.setdefault("permissions", {})
+    allow = perms.setdefault("allow", [])
+    if rule not in allow:
+        allow.append(rule)
+    try:
+        sp.parent.mkdir(parents=True, exist_ok=True)
+        sp.write_text(json.dumps(data, indent=2) + chr(10), encoding="utf-8")
+    except OSError as e:
+        log(f"[perm]   settings write failed: {e}")
+        return False
+    log(f"[perm]   allowlisted {rule}")
+    return True
 
 
 _DETAILS = {"details", "the details", "give me details",
@@ -311,12 +386,29 @@ def make_permission_gate(mouth):
                 message="Interrupted by the user; the turn is being "
                         "cancelled.",
                 interrupt=False)
-        approved = _norm_speech(answer) in _YES
+        said = _norm_speech(answer)
+        always = said in _ALWAYS
+        approved = always or said in _YES
         # the model keeps working either way: restore the working state
         signals.set_state("thinking")
         signals.static_start()
         if approved:
             log("[perm]   approved by voice")
+            if always:
+                # One tap means "and never ask me this again": persist
+                # the rule, then SAY what was widened. Silence here
+                # would let the allowlist grow without the person ever
+                # hearing which door they just left open.
+                rule = _perm_rule(tool, tool_input)
+                if rule is None:
+                    mouth.say("Doing it. I can't safely pre-approve "
+                              "that kind, so I'll still ask next time.")
+                elif _add_allow_rule(rule):
+                    mouth.say(f"Doing it, and I've allowed {rule} from "
+                              "now on. It takes effect next restart.")
+                else:
+                    mouth.say("Doing it, but I couldn't save the rule, "
+                              "so I'll ask again next time.")
             return PermissionResultAllow(behavior="allow")
         log(f"[perm]   denied: {answer!r}")
         return PermissionResultDeny(
