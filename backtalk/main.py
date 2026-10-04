@@ -194,8 +194,8 @@ def _human_what(tool, tool_input, ctx):
         cmd = " ".join(str(d.get("command", "")).split())
         first = (cmd.split() or ["a"])[0].rsplit("/", 1)[-1]
         chained = any(m in cmd for m in _CHAIN_MARKS)
-        return (f"run a {first} command in the terminal"
-                + (", with several chained parts" if chained else ""))
+        return (f"run a {first} command"
+                + (", several parts chained" if chained else ""))
     if tool == "WebFetch":
         url = str(d.get("url", ""))
         host = url.split("//", 1)[-1].split("/", 1)[0] or "a site"
@@ -322,14 +322,19 @@ def make_permission_gate(mouth):
         log(f"[perm]   detail: {detail}")
         if tool == "Bash":   # the FULL command always reaches the log
             log(f"[perm]   full command: {str((tool_input or {}).get('command', ''))[:2000]}")
-        ask = f"Permission check. I want to {what}. Yes, no, or details?"
+        # OUR FORK: the ask is a plain spoken question, not a form read
+        # aloud. "Permission check" was a preamble that said nothing the
+        # question does not, and reciting "yes, no, or details" on EVERY
+        # ask is noise once you know it -- so the options moved into the
+        # one-time hint below. What gets gated is unchanged.
+        ask = f"Can I {what}?"
         if not _PERM["hinted"]:
             # the escape hatch announces itself exactly once, at the
             # moment it becomes relevant (a field case: a new user
             # couldn't find the phrase to turn the checks off)
             _PERM["hinted"] = True
-            ask += (" And any time you're done with these checks, say "
-                    "stop asking for permission.")
+            ask += (" Say details any time you want the specifics, or "
+                    "stop asking for permission to switch these off.")
         mouth.say(ask)
         # On the phone: the SHORT form only. The full literal command
         # stays in the log and behind "details" -- nobody wants to read
