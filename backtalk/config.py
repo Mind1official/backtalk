@@ -39,9 +39,16 @@ DEFAULTS = {
     # session runs there, so it's the same assistant as your terminal
     # sessions — same name, same personality, same memory.
     "agent_dir": "~",
-    # Display name, used in logs and to build the quit phrases
-    # ("goodbye <name>" hangs up). Match your agent's actual name.
+    # The SPOKEN name: the wake word the answer-only gate matches against
+    # your speech, and the base of the quit phrases ("goodbye <name>").
+    # Spell it the way speech-to-text actually hears it, not the way it is
+    # written -- a mismatch here silently deafens answer-only mode.
     "name": "Assistant",
+    # The WRITTEN name shown in the chat log and the visualizer. Defaults to
+    # "name". Set it when the spelling and the pronunciation differ, e.g.
+    # name "Janice" (what STT hears) with display_name "Janus" (the real
+    # spelling), so the gate keeps working while the chat reads correctly.
+    "display_name": "",
     # The brain. Full model id ON PURPOSE — never a bare alias like
     # "sonnet": the SDK resolves aliases through its own bundled CLI and
     # can silently land on an older model. The fast tier is most of the
@@ -128,6 +135,29 @@ DEFAULTS = {
     # is silent by design. 0 disables.
     "stall_timeout_s": 120,
     "tool_stall_timeout_s": 1200,
+    # MUSIC MODE (music.py): after music_enter_s of unbroken sound the
+    # face turns into a visualizer and nothing is transcribed until the
+    # music stops (music_exit_quiet_s of quiet) or speech-shaped gaps
+    # appear. Any "utterance" longer than music_utterance_cap_s of
+    # unbroken sound is dropped as music, so lyrics are never answered.
+    # Built for an input that carries music OR a voice, not both. Needs
+    # hands-free listening; push-to-talk never hears the room.
+    "music_mode": False,
+    "music_enter_s": 60,
+    "music_exit_quiet_s": 3,
+    "music_utterance_cap_s": 15,
+    # REMOTE VOICE (remote.py): a hold-to-talk page for a phone or
+    # tablet, served on 127.0.0.1 only and reached from outside through
+    # a Cloudflare Tunnel with Access in front. OFF by default. Two locks:
+    # the Access login (team/aud/email below, verified in access.py) and
+    # a spoken passcode stored only as a salted hash, set with
+    #   python -m backtalk.remote --set-passcode
+    "remote_enabled": False,
+    "remote_port": 8797,
+    "remote_passcode_hash": "",
+    "remote_access_team": "",      # e.g. "yourteam.cloudflareaccess.com"
+    "remote_access_aud": "",       # the Access application's AUD tag
+    "remote_allowed_email": "",    # the one account Access may let in
     # Publish your Claude usage (the five-hour and weekly windows) on the
     # signal bus so a face can draw it. OFF by default and deliberately
     # so: this is your own account spend, and the faces this feeds are
@@ -243,6 +273,11 @@ DEFAULTS = {
     # Spoken instead of "greeting" when mic_mode is "open", where telling
     # someone to hold a key is wrong. Leave "" to use "greeting" for both.
     "greeting_open_mic": "",
+    # Spoken instead of the above when the launch picks up an earlier
+    # conversation: it reattached, or it starts fresh carrying resume
+    # notes. "What are we working on?" is wrong when the agent already
+    # knows. Leave "" to always use the plain greeting.
+    "greeting_resume": "",
     "signoff": "Voice line closing. I'll be here when you need me.",
     # Appended to the spoken-delivery discipline below. The discipline covers
     # the MEDIUM (write for the ear, no markdown, keep it short); your agent's
@@ -316,6 +351,7 @@ def load() -> dict:
     cfg["thinking_sound"] = thinking
     name = str(cfg.get("name") or "Assistant")
     low = name.lower()
+    cfg["display_name"] = str(cfg.get("display_name") or name)
     cfg["quit_phrases"] = tuple(cfg.get("quit_phrases") or (
         f"goodbye {low}", f"good bye {low}", "end voice mode",
         f"hang up {low}", "hang up"))
@@ -325,6 +361,8 @@ def load() -> dict:
     if str(cfg.get("mic_mode", "ptt")) == "open" and cfg.get("greeting_open_mic"):
         cfg["greeting"] = cfg["greeting_open_mic"]
     cfg["greeting"] = str(cfg["greeting"]).replace(
+        "{name}", name).replace("{ptt_key}", key_label)
+    cfg["greeting_resume"] = str(cfg.get("greeting_resume") or "").replace(
         "{name}", name).replace("{ptt_key}", key_label)
     cfg["signoff"] = str(cfg["signoff"]).replace("{name}", name)
     return cfg

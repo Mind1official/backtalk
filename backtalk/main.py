@@ -63,6 +63,7 @@ import sys
 import threading
 import time
 
+from backtalk import remote as remote_mod
 from backtalk import signals
 from backtalk.brain import BrainStalled, WarmBrain, resume_verdict
 from backtalk.config import CFG
@@ -72,7 +73,8 @@ from backtalk.mouth import Mouth
 from backtalk.ptt import PTTListener
 from backtalk.vlog import log
 
-NAME = CFG["name"]
+NAME = CFG["name"]          # spoken: wake word + quit phrases
+DISPLAY = CFG["display_name"]  # written: chat log and visualizer label
 QUIT_PHRASES = CFG["quit_phrases"]
 
 # ---- THE SPOKEN PERMISSION GATE (permission_mode "ask", the default).
@@ -337,6 +339,10 @@ CONSOLE_VERBS = {
                        "switch to answer only mode"),
     "answeronly_off": ("open mic mode", "turn off answer only mode",
                        "exit answer only mode"),
+    "music_on":       ("music mode on", "turn on music mode",
+                       "go music mode", "switch to music mode"),
+    "music_off":      ("music mode off", "turn off music mode",
+                       "exit music mode"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -618,17 +624,17 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
         if not s:
             return
         if first:
-            log(f"[{NAME}] ({time.time()-t0:.1f}s to first) {s}"
+            log(f"[{DISPLAY}] ({time.time()-t0:.1f}s to first) {s}"
                 + (f"  <directions: {pending}>" if pending else ""))
             # New line for a new turn, then grown in place below, so a
             # face tailing the log watches the reply fill as it is said.
-            signals.transcript(NAME, s)
+            signals.transcript(DISPLAY, s)
             mouth.say_chunk(s, pending)
             pending = []
             first = False
         else:
-            signals.transcript(NAME, s, append=True)
-            log(f"[{NAME}] {s}" + (f"  <directions: {pending}>" if pending else ""))
+            signals.transcript(DISPLAY, s, append=True)
+            log(f"[{DISPLAY}] {s}" + (f"  <directions: {pending}>" if pending else ""))
             batch.append(s)
             if len(batch) >= 2:
                 mouth.say_chunk(" ".join(batch), pending)
@@ -706,10 +712,13 @@ async def amain():
     mode = ("hands-free listening (the talk key still works)"
             if _MIC["mode"] == "open"
             else f"push-to-talk ({CFG['ptt_key']})")
-    log(f"[backtalk] up — agent={NAME} dir={CFG['agent_dir']} "
+    log(f"[backtalk] up — agent={DISPLAY} dir={CFG['agent_dir']} "
         f"model={brain.model} mic={mode} "
         f"(say 'goodbye {NAME.lower()}' to hang up)")
-    mouth.say(CFG["greeting"])
+    # A launch that picks up earlier work says so instead of asking
+    picked_up = bool(resume_id or skipped)
+    mouth.say(CFG["greeting_resume"] if picked_up and CFG["greeting_resume"]
+              else CFG["greeting"])
 
     loop = asyncio.get_event_loop()
     # Warm the engines while the greeting plays: the STT model load and
@@ -756,6 +765,37 @@ async def amain():
     speak_task: asyncio.Task | None = None
     typed_q: "queue.Queue[str]" = queue.Queue()
     threading.Thread(target=_typed_reader, args=(typed_q,), daemon=True).start()
+
+    # REMOTE VOICE: while a phone holds the floor, permissions drop to
+    # "ask" (answered from the phone), and come back as they were after.
+    _REMOTE_PREV = {"autoapprove": None}
+
+    async def remote_begin():
+        _REMOTE_PREV["autoapprove"] = _AUTOAPPROVE["on"]
+        _AUTOAPPROVE["on"] = False
+        if CFG_BOOT_MODE == "bypassPermissions":
+            # a bypass-booted session never consults the gate, so the
+            # SDK itself must flip (the safe direction works live)
+            try:
+                await brain.set_permission_mode("ask")
+            except Exception as e:
+                log(f"[remote] could not switch to ask mode ({e}); "
+                    "ending the remote session to stay safe")
+                await remote_srv._end("permissions could not be tightened")
+                return
+        log("[remote] permissions -> ask for the remote session")
+
+    async def remote_end():
+        if _REMOTE_PREV["autoapprove"] is not None:
+            # the SDK stays in ask mode; auto-approve rides the gate,
+            # exactly as the spoken "stop asking" switch does
+            _AUTOAPPROVE["on"] = _REMOTE_PREV["autoapprove"]
+            _REMOTE_PREV["autoapprove"] = None
+            log("[remote] permissions restored")
+
+    remote_srv = await remote_mod.start(
+        asyncio.get_running_loop(), mouth, typed_q, remote_begin,
+        remote_end, QUIT_PHRASES)
     typed_fut: asyncio.Future | None = None
 
     async def run_console(verb):
@@ -850,6 +890,18 @@ async def amain():
                        "past a restart. ")
                       + "Say start asking again any time to flip it "
                         "back.")
+        elif verb == "music_on":
+            resp = ""
+            # Said with the talk key held, or before the music starts:
+            # once music mode is on nothing is transcribed, so the key is
+            # the way to be heard over it.
+            ears.music.force_on()
+            mouth.say("Music mode on. Visualizer up. I won't listen to "
+                      "the lyrics. Hold the talk key if you need me.")
+        elif verb == "music_off":
+            resp = ""
+            ears.music.force_off()
+            mouth.say("Music mode off.")
         elif verb == "answeronly_on":
             resp = ""
             if _ANSWERONLY["on"]:
@@ -1016,6 +1068,7 @@ async def amain():
         # capture would turn one held utterance into two turns), and,
         # without barge-in, while the mouth speaks.
         mic_gate = (lambda: _MIC["btn"]
+                    or remote_mod.STATE["active"]
                     or (not barge_in and mouth.speaking))
         mic_fails = 0
         while True:
