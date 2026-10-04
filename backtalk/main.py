@@ -186,7 +186,10 @@ def _human_what(tool, tool_input, ctx):
                                                   or [])
         in_vault = any(h and path.startswith(str(h).rstrip("/") + "/")
                        for h in (CFG.get("extra_dirs") or []))
-        verb = "edit" if "Edit" in tool else "create or change"
+        # "write" rather than "create or change": shorter, and still
+        # honest -- Write both creates and replaces, and the literal
+        # path plus content size stay behind "details".
+        verb = "edit" if "Edit" in tool else "write"
         if in_vault and name.endswith(".md"):
             return f"{verb} a note in your vault called {name[:-3]}"
         return f"{verb} a file called {name}"
