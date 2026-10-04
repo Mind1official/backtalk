@@ -379,6 +379,8 @@ async def start(loop, mouth, typed_q, on_begin, on_end, quit_phrases):
 def _set_passcode():
     """Typed by the owner at the PC, never echoed, stored only as a hash."""
     import getpass
+    from backtalk.config import CONFIG_PATH
+    print(f"Writing to: {_config_arg() or CONFIG_PATH}")
     print("Choose a spoken passcode: several plain words, no numbers, "
           "nothing you ever say on stream.")
     a = getpass.getpass("Passcode: ")
@@ -390,9 +392,23 @@ def _set_passcode():
     return 0
 
 
+def _config_arg() -> str | None:
+    """`--config <path>`: write the hash to THIS file, whatever the
+    environment says. Learned the hard way -- BACKTALK_CONFIG set in a
+    spawned console did not reach the child, and a PIN meant for a
+    second instance silently overwrote the first instance's."""
+    if "--config" in sys.argv:
+        try:
+            return sys.argv[sys.argv.index("--config") + 1]
+        except IndexError:
+            return None
+    return None
+
+
 def _write_hash(phrase: str) -> str:
     """Store a new gate secret as a salted hash. Returns the path."""
     from backtalk.config import CONFIG_PATH
+    CONFIG_PATH = _config_arg() or CONFIG_PATH
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg = json.load(f)
@@ -409,6 +425,8 @@ def _set_pin():
     """A typed PIN for the phone keypad. Safer than a spoken phrase:
     nothing to overhear on a room mic or a stream VOD."""
     import getpass
+    from backtalk.config import CONFIG_PATH
+    print(f"Writing to: {_config_arg() or CONFIG_PATH}")
     print("Choose a PIN for the phone keypad: 4 to 10 digits.")
     a = getpass.getpass("PIN: ")
     b = getpass.getpass("Again: ")
@@ -428,4 +446,5 @@ if __name__ == "__main__":
         sys.exit(_set_pin())
     if "--set-passcode" in sys.argv:
         sys.exit(_set_passcode())
-    print("usage: python -m backtalk.remote --set-pin | --set-passcode")
+    print("usage: python -m backtalk.remote --set-pin | --set-passcode"
+          "\n              [--config <path to backtalk.json>]")

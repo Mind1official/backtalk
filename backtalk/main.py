@@ -51,6 +51,13 @@ Flags:
                HEADPHONES REQUIRED — with open speakers the mic hears
                the reply and the agent interrupts itself.
   --model X    override the model for this session (full id).
+  --remote-only
+               no local mic, no talk key, no spoken greeting: this
+               instance is reachable only from a phone (remote voice).
+               Lets a SECOND backtalk share one PC with the first --
+               point it at its own config with BACKTALK_CONFIG, give
+               it its own remote_port and signals_dir, and the two
+               never fight over the hotkey or the speakers.
 
 Say "goodbye <name>" / "end voice mode" to hang up. Ctrl-C works.
 """
@@ -672,6 +679,12 @@ async def speak_reply(brain: WarmBrain, mouth: Mouth, text: str):
 async def amain():
     open_mic = "--open-mic" in sys.argv
     barge_in = "--barge-in" in sys.argv
+    # REMOTE ONLY: this instance has no local ears, no talk key, and no
+    # spoken greeting. It exists to be reached from a phone. Needed so a
+    # SECOND backtalk can share one PC without fighting the first for the
+    # global hotkey (two pynput listeners both fire) or talking out of
+    # the speakers while the first instance is mid-sentence.
+    remote_only = "--remote-only" in sys.argv
     model = None
     if "--model" in sys.argv:
         try:
@@ -681,8 +694,8 @@ async def amain():
 
     CFG_BOOT_MODE = CFG["permission_mode"]
     _AUTOAPPROVE["on"] = CFG_BOOT_MODE == "bypassPermissions"
-    _MIC["mode"] = "open" if (open_mic
-                              or CFG.get("mic_mode") == "open") else "ptt"
+    _MIC["mode"] = "ptt" if remote_only else (
+        "open" if (open_mic or CFG.get("mic_mode") == "open") else "ptt")
     # resume_last_session: reattach to the saved conversation, if any
     resume_id = None
     if CFG.get("resume_last_session"):
@@ -717,8 +730,13 @@ async def amain():
         f"(say 'goodbye {NAME.lower()}' to hang up)")
     # A launch that picks up earlier work says so instead of asking
     picked_up = bool(resume_id or skipped)
-    mouth.say(CFG["greeting_resume"] if picked_up and CFG["greeting_resume"]
-              else CFG["greeting"])
+    if remote_only:
+        log("[backtalk] remote-only: no local mic, no talk key, "
+            "no spoken greeting")
+    else:
+        mouth.say(CFG["greeting_resume"]
+                  if picked_up and CFG["greeting_resume"]
+                  else CFG["greeting"])
 
     loop = asyncio.get_event_loop()
     # Warm the engines while the greeting plays: the STT model load and
@@ -796,6 +814,14 @@ async def amain():
     remote_srv = await remote_mod.start(
         asyncio.get_running_loop(), mouth, typed_q, remote_begin,
         remote_end, QUIT_PHRASES)
+    if remote_only and remote_srv is None:
+        # No local ears and no phone to reach: there is no way in at all.
+        # Usually the same config is already running in another window.
+        log("[backtalk] remote-only, but the remote server did not start "
+            f"(port {CFG.get('remote_port')} busy, or remote_enabled is "
+            "false). Nothing could reach this instance, so stopping.")
+        await brain.stop()
+        raise SystemExit(1)
     typed_fut: asyncio.Future | None = None
 
     async def run_console(verb):
@@ -1060,7 +1086,7 @@ async def amain():
         # in "open" mode; a mode switch bumps _MIC["gen"], the abort
         # callable closes the in-flight open mic promptly, and any
         # capture born under an old gen is discarded unprocessed.
-        ptt = PTTListener(CFG["ptt_key"])
+        ptt = None if remote_only else PTTListener(CFG["ptt_key"])
         press_fut: asyncio.Future | None = None
         mic_fut: asyncio.Future | None = None
         mic_gen_seen = _MIC["gen"]
@@ -1082,10 +1108,10 @@ async def amain():
                     mic_fut.result(); mic_fut = None
             if typed_fut is None:
                 typed_fut = loop.run_in_executor(None, typed_q.get)
-            if press_fut is None:
+            if press_fut is None and ptt is not None:
                 press_fut = loop.run_in_executor(None, ptt.wait_press)
-            waiters = {press_fut, typed_fut}
-            if _MIC["mode"] == "open":
+            waiters = {typed_fut} if ptt is None else {press_fut, typed_fut}
+            if _MIC["mode"] == "open" and ptt is not None:
                 if mic_fut is None:
                     g = _MIC["gen"]
                     mic_fut = loop.run_in_executor(
@@ -1216,7 +1242,13 @@ def _claim_single_instance() -> bool:
 
 
 def main():
-    if not _claim_single_instance():
+    # A remote-only instance takes neither the microphone nor the talk
+    # key, which is the ONLY thing this mutex protects, so it is exempt:
+    # that exemption is what lets a second voice line (a different
+    # person, its own config and port) share one PC. Duplicate copies of
+    # the SAME config are still impossible -- the second one cannot bind
+    # its remote_port, and in remote-only mode that is fatal.
+    if "--remote-only" not in sys.argv and not _claim_single_instance():
         print("[backtalk] ANOTHER VOICE LINE IS ALREADY RUNNING on this "
               "machine, so this one is stopping.", flush=True)
         print("[backtalk] Two of them fight over the microphone and the "
