@@ -22,12 +22,13 @@ capture that could be pointed at a different device.
 
 Every frame passes through feed(); keep it cheap. Never raises.
 """
+import json
 from collections import deque
 
 import numpy as np
 
 from backtalk import signals
-from backtalk.config import CFG
+from backtalk.config import CFG, CONFIG_PATH
 from backtalk.vlog import log
 
 FRAME_S = 0.030
@@ -57,6 +58,26 @@ class MusicDetector:
         self.gain = float(CFG.get("music_gain") or 0.6)
         self.decay = float(CFG.get("music_peak_decay") or 0.995)
         self.db_range = float(CFG.get("music_db_range") or 45)
+        self._knobs_mtime = 0.0
+
+    def _refresh_knobs(self):
+        """Re-read the three visualizer knobs if backtalk.json changed,
+        so they can be tuned while music plays without a restart.
+        Nothing else is hot-reloaded. Called from the spectrum path, so
+        at most ~8/s and only while music mode is on."""
+        try:
+            mtime = CONFIG_PATH.stat().st_mtime
+            if mtime == self._knobs_mtime:
+                return
+            self._knobs_mtime = mtime
+            user = json.loads(CONFIG_PATH.read_text())
+            self.gain = float(user.get("music_gain") or self.gain)
+            self.decay = float(user.get("music_peak_decay") or self.decay)
+            self.db_range = float(user.get("music_db_range") or self.db_range)
+            log(f"[music] knobs reloaded: gain={self.gain} "
+                f"decay={self.decay} db_range={self.db_range}")
+        except Exception as e:
+            log(f"[music] knob reload skipped: {e}")
 
     @property
     def sound_run_s(self) -> float:
@@ -134,6 +155,7 @@ class MusicDetector:
         self._spec_buf.append(frame)
         if len(self._spec_buf) < self._pub_every:
             return
+        self._refresh_knobs()
         x = np.concatenate(self._spec_buf).astype(np.float32) / 32768.0
         self._spec_buf = []
         mag = np.abs(np.fft.rfft(x * np.hanning(len(x))))
