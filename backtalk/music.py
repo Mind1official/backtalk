@@ -137,7 +137,6 @@ class MusicDetector:
         """The spoken "music mode on": skip the wait. The normal exits
         still apply, since nothing is transcribed while it's on."""
         if CFG.get("music_mode") and not self.on:
-            self.sound_run = int(self.enter_s / FRAME_S)
             self._set(True, "asked for by voice")
 
     def force_off(self):
@@ -148,6 +147,14 @@ class MusicDetector:
         self.on = on
         self._gaps.clear()
         self._spec_buf = []
+        # Both run counters must start fresh on every transition, or the
+        # new state can be undone by evidence gathered for the old one.
+        # That is what made "music mode on" flap on/off every other frame
+        # in a quiet room: force_on faked a 60 s sound run, the stale
+        # quiet run immediately exited on "the music stopped", and the
+        # still-faked sound run re-entered, forever.
+        self._quiet_run = 0
+        self.sound_run = 0
         log(f"[music] music mode {'ON' if on else 'off'} ({why})")
         signals.set_music(on)
 
