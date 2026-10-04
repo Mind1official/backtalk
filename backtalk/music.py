@@ -58,6 +58,8 @@ class MusicDetector:
         self.gain = float(CFG.get("music_gain") or 0.6)
         self.decay = float(CFG.get("music_peak_decay") or 0.995)
         self.db_range = float(CFG.get("music_db_range") or 45)
+        self.tilt_db = float(CFG.get("music_tilt_db") or 4.5)
+        self._tilt = None
         self._knobs_mtime = 0.0
 
     def _refresh_knobs(self):
@@ -74,6 +76,9 @@ class MusicDetector:
             self.gain = float(user.get("music_gain") or self.gain)
             self.decay = float(user.get("music_peak_decay") or self.decay)
             self.db_range = float(user.get("music_db_range") or self.db_range)
+            tilt = float(user.get("music_tilt_db") or self.tilt_db)
+            if tilt != self.tilt_db:
+                self.tilt_db, self._tilt = tilt, None
             log(f"[music] knobs reloaded: gain={self.gain} "
                 f"decay={self.decay} db_range={self.db_range}")
         except Exception as e:
@@ -176,6 +181,14 @@ class MusicDetector:
         # full length no matter what was playing. A dB floor keeps the
         # real distance between a loud band and a quiet one.
         db = 20 * np.log10(bands + 1e-9)
+        # Music energy falls as frequency rises, so without a tilt the
+        # mids and highs sit permanently far below the bass peak and
+        # never move. Lift each band music_tilt_db per octave above the
+        # lowest, so every band is judged against its own neighbourhood.
+        if self._tilt is None or len(self._tilt) != len(db):
+            centres = np.sqrt(edges[:-1] * edges[1:])
+            self._tilt = self.tilt_db * np.log2(centres / centres[0])
+        db = db + self._tilt
         # a slowly decaying peak keeps the bars lively at any volume
         self._peak = max(float(db.max()), self._peak * self.decay
                          + db.max() * (1 - self.decay), -120.0)

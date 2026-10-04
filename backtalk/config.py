@@ -160,6 +160,10 @@ DEFAULTS = {
     # Smaller is punchier (only the loudest bands show), larger shows
     # more of the quiet detail.
     "music_db_range": 45,
+    # dB of lift per octave, so the naturally quieter mids and highs
+    # are judged against their own neighbourhood instead of the bass
+    # peak. 0 is no tilt; higher wakes the top end up.
+    "music_tilt_db": 4.5,
     # how fast that peak falls, per spectrum publish (~8/s). Closer
     # to 1.0 holds the loudest recent peak longer, so the bars react
     # more slowly; lower makes them snap back to the current volume.
