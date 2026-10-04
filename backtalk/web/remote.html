@@ -40,6 +40,20 @@
           background:var(--bg); }
   #gate button { font:800 18px system-ui; letter-spacing:.1em; color:#fff; background:var(--accent);
                  border:0; border-radius:14px; padding:20px 34px; }
+  #pad { position:fixed; inset:0; z-index:4; display:none; flex-direction:column; align-items:center;
+         justify-content:center; gap:22px; background:var(--bg);
+         padding:env(safe-area-inset-top) 16px calc(16px + env(safe-area-inset-bottom)); }
+  #pad.on { display:flex; }
+  #dots { display:flex; gap:14px; min-height:16px; }
+  #dots i { width:12px; height:12px; border-radius:50%; background:#2c2c35; }
+  #dots i.full { background:var(--glow); box-shadow:0 0 12px 2px rgba(255,45,90,.5); }
+  #keys { display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; width:min(78vw, 300px); }
+  #keys button { font:600 26px system-ui; color:var(--text); background:#15151b; border:1px solid #2c2c35;
+                 border-radius:16px; padding:18px 0; }
+  #keys button:active { background:var(--accent); color:#fff; }
+  #keys button.wide { font:700 14px system-ui; letter-spacing:.1em; color:var(--muted); }
+  #padmsg { color:var(--muted); font-size:14px; text-align:center; min-height:20px; }
+  #padmsg.bad { color:var(--glow); }
 </style>
 </head>
 <body>
@@ -49,6 +63,18 @@
   <div id="orb" class="idle"></div>
   <div id="status">Connecting</div>
   <div id="hint"></div>
+</div>
+<div id="pad">
+  <div id="dots"></div>
+  <div id="keys">
+    <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button>
+    <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button>
+    <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button>
+    <button class="wide" data-k="clear">CLEAR</button>
+    <button data-k="0">0</button>
+    <button class="wide" data-k="enter">ENTER</button>
+  </div>
+  <div id="padmsg">Enter your PIN</div>
 </div>
 <div id="log"></div>
 <script>
@@ -63,7 +89,7 @@ function setStatus(s, hint) {
 function orb(cls) { $("orb").className = cls; }
 function idleHint() {
   if (Date.now() < lockedUntil) return;
-  if (!authed) setStatus("Locked", "Hold anywhere and say the passcode.");
+  if (!authed) setStatus("Locked", "Enter your PIN to unlock.");
   else setStatus("Ready", `Hold anywhere to talk to ${name}.`);
 }
 
@@ -106,6 +132,35 @@ function pulse() {   // the orb breathes with her voice
   requestAnimationFrame(pulse);
 }
 
+// ---------- the keypad gate ----------
+let pin = "";
+const PIN_MAX = 10;
+function drawPin() {
+  $("dots").innerHTML = Array.from(pin, () => '<i class="full"></i>').join("");
+}
+function padMsg(text, bad) {
+  $("padmsg").textContent = text;
+  $("padmsg").className = bad ? "bad" : "";
+}
+function showPad(on) {
+  $("pad").className = on ? "on" : "";
+  if (on) { pin = ""; drawPin(); }
+}
+function sendPin() {
+  if (pin.length < 4 || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ t: "pin", data: pin }));
+  pin = ""; drawPin(); padMsg("Checking...");
+}
+$("keys").addEventListener("click", (e) => {
+  const k = e.target.dataset && e.target.dataset.k;
+  if (!k || Date.now() < lockedUntil) return;
+  if (navigator.vibrate) navigator.vibrate(10);
+  if (k === "clear") { pin = ""; drawPin(); padMsg("Enter your PIN"); return; }
+  if (k === "enter") { sendPin(); return; }
+  if (pin.length < PIN_MAX) { pin += k; drawPin(); }
+  if (pin.length === PIN_MAX) sendPin();
+});
+
 // ---------- socket ----------
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
@@ -121,18 +176,21 @@ function connect() {
     switch (m.t) {
       case "hello":
         name = d.name; authed = false; $("bye").style.display = "none";
-        if (d.locked) lock(d.locked); else idleHint();
-        if (!d.has_passcode) setStatus("Not set up", "No passcode is set on the PC yet.");
+        showPad(true);
+        if (d.locked) lock(d.locked); else { idleHint(); padMsg("Enter your PIN"); }
+        if (!d.has_passcode) { showPad(false); setStatus("Not set up", "No PIN is set on the PC yet."); }
         break;
       case "auth":
         if (d.ok) {
-          authed = true; $("bye").style.display = "block";
+          authed = true; $("bye").style.display = "block"; showPad(false);
           if (d.token) sessionStorage.setItem("vl_token", d.token);
           setStatus("Unlocked", `Hold anywhere to talk to ${name}.`);
         } else {
-          sessionStorage.removeItem("vl_token"); authed = false;
-          if (d.left !== undefined) setStatus("Wrong passcode", `${d.left} ${d.left === 1 ? "try" : "tries"} left.`);
-          else idleHint();
+          sessionStorage.removeItem("vl_token"); authed = false; showPad(true);
+          if (d.left !== undefined) {
+            setStatus("Wrong PIN", `${d.left} ${d.left === 1 ? "try" : "tries"} left.`);
+            padMsg(`Wrong PIN - ${d.left} ${d.left === 1 ? "try" : "tries"} left.`, true);
+          } else { idleHint(); padMsg("Enter your PIN"); }
         }
         break;
       case "locked": lock(d); break;
@@ -158,17 +216,18 @@ function connect() {
 function lock(secs) {
   lockedUntil = Date.now() + secs * 1000; orb("locked");
   const mins = Math.ceil(secs / 60);
-  setStatus("Locked out", `Too many wrong passcodes. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`);
-  setTimeout(() => { orb("idle"); idleHint(); }, secs * 1000);
+  const wait = `Too many wrong PINs. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`;
+  setStatus("Locked out", wait); padMsg(wait, true);
+  setTimeout(() => { orb("idle"); idleHint(); padMsg("Enter your PIN"); }, secs * 1000);
 }
 
 // ---------- hold to talk ----------
 const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
 function down(e) {
   e.preventDefault();
-  if (holding || !stream || ws.readyState !== 1 || Date.now() < lockedUntil) return;
+  if (holding || !authed || !stream || ws.readyState !== 1 || Date.now() < lockedUntil) return;
   holding = true;
-  if (authed) { ws.send(JSON.stringify({ t: "press" })); flush(); }
+  ws.send(JSON.stringify({ t: "press" })); flush();
   chunks = [];
   rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
   rec.ondataavailable = (ev) => { if (ev.data.size) chunks.push(ev.data); };
@@ -177,7 +236,7 @@ function down(e) {
     if (blob.size > 0 && ws.readyState === 1) ws.send(await blob.arrayBuffer());
   };
   rec.start();
-  orb("listening"); setStatus("Listening", authed ? "Let go to send." : "Say the passcode, then let go.");
+  orb("listening"); setStatus("Listening", "Let go to send.");
   if (navigator.vibrate) navigator.vibrate(15);
 }
 function up(e) {
@@ -185,7 +244,7 @@ function up(e) {
   if (!holding) return;
   holding = false;
   if (rec && rec.state !== "inactive") rec.stop();
-  orb("thinking"); setStatus(authed ? "Sending" : "Checking", "");
+  orb("thinking"); setStatus("Sending", "");
 }
 const stage = $("stage");
 stage.addEventListener("pointerdown", down);
@@ -196,7 +255,7 @@ stage.addEventListener("contextmenu", (e) => e.preventDefault());
 
 $("bye").onclick = () => {
   if (ws.readyState === 1) ws.send(JSON.stringify({ t: "bye" }));
-  sessionStorage.removeItem("vl_token"); authed = false; flush();
+  sessionStorage.removeItem("vl_token"); authed = false; flush(); showPad(true);
 };
 
 // Browsers only allow the mic and audio after a real tap, so one tap opens both.

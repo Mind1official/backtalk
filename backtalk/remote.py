@@ -264,6 +264,13 @@ class Remote:
                 await self._send({"t": "auth", "data": {"ok": True}})
             else:
                 await self._send({"t": "auth", "data": {"ok": False}})
+        elif t == "pin" and not STATE["active"]:
+            now = time.time()
+            if now < self.locked_until:
+                await self._send({"t": "locked",
+                                  "data": int(self.locked_until - now)})
+                return
+            await self._gate(str(m.get("data") or "")[:32])
         elif t == "press" and STATE["active"]:
             self.last_seen = time.time()
             if self.mouth.speaking:
@@ -284,6 +291,35 @@ class Remote:
         finally:
             self.busy = False
 
+    async def _gate(self, text: str) -> None:
+        """One attempt at the gate, from a spoken clip or a typed PIN.
+        Both normalize through _norm, so the same stored hash answers
+        either: a PIN is just a passcode made of digits."""
+        stored = CFG.get("remote_passcode_hash") or ""
+        if not stored:
+            await self._send({"t": "notice",
+                              "data": "No passcode is set on the PC yet."})
+            return
+        if text and check_passcode(text, stored):
+            self.fails = 0
+            self.token = secrets.token_urlsafe(32)
+            self.last_seen = time.time()
+            log("[remote] passcode accepted")
+            await self._send({"t": "auth",
+                              "data": {"ok": True, "token": self.token}})
+            await self._begin()
+            return
+        self.fails += 1
+        log(f"[remote] passcode rejected ({self.fails}/{MAX_FAILS})")
+        if self.fails >= MAX_FAILS:
+            self.fails = 0
+            self.locked_until = time.time() + LOCKOUT_S
+            log("[remote] LOCKED for 15 minutes after 3 bad passcodes")
+            await self._send({"t": "locked", "data": LOCKOUT_S})
+        else:
+            await self._send({"t": "auth", "data": {
+                "ok": False, "left": MAX_FAILS - self.fails}})
+
     async def _handle_clip(self, blob: bytes):
         from backtalk.ears import transcribe
         now = time.time()
@@ -297,30 +333,7 @@ class Remote:
         text = (await self.loop.run_in_executor(None, transcribe, pcm)).strip()
 
         if not STATE["active"]:                     # ---- the gate ----
-            stored = CFG.get("remote_passcode_hash") or ""
-            if not stored:
-                await self._send({"t": "notice",
-                                  "data": "No passcode is set on the PC yet."})
-                return
-            if text and check_passcode(text, stored):
-                self.fails = 0
-                self.token = secrets.token_urlsafe(32)
-                self.last_seen = time.time()
-                log("[remote] passcode accepted")
-                await self._send({"t": "auth",
-                                  "data": {"ok": True, "token": self.token}})
-                await self._begin()
-                return
-            self.fails += 1
-            log(f"[remote] passcode rejected ({self.fails}/{MAX_FAILS})")
-            if self.fails >= MAX_FAILS:
-                self.fails = 0
-                self.locked_until = time.time() + LOCKOUT_S
-                log("[remote] LOCKED for 15 minutes after 3 bad passcodes")
-                await self._send({"t": "locked", "data": LOCKOUT_S})
-            else:
-                await self._send({"t": "auth", "data": {
-                    "ok": False, "left": MAX_FAILS - self.fails}})
+            await self._gate(text)
             return
 
         self.last_seen = time.time()                # ---- live ----
@@ -366,7 +379,6 @@ async def start(loop, mouth, typed_q, on_begin, on_end, quit_phrases):
 def _set_passcode():
     """Typed by the owner at the PC, never echoed, stored only as a hash."""
     import getpass
-    from backtalk.config import CONFIG_PATH
     print("Choose a spoken passcode: several plain words, no numbers, "
           "nothing you ever say on stream.")
     a = getpass.getpass("Passcode: ")
@@ -374,20 +386,46 @@ def _set_passcode():
     if _norm(a) != _norm(b) or len(_norm(a).split()) < 3:
         print("Not set: the two didn't match, or it was under three words.")
         return 1
+    print(f"Passcode set in {_write_hash(a)}. Restart the voice line to use it.")
+    return 0
+
+
+def _write_hash(phrase: str) -> str:
+    """Store a new gate secret as a salted hash. Returns the path."""
+    from backtalk.config import CONFIG_PATH
     try:
         with open(CONFIG_PATH, encoding="utf-8") as f:
             cfg = json.load(f)
     except (OSError, ValueError):
         cfg = {}
-    cfg["remote_passcode_hash"] = hash_passcode(a)
+    cfg["remote_passcode_hash"] = hash_passcode(phrase)
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
         f.write("\n")
-    print(f"Passcode set in {CONFIG_PATH}. Restart the voice line to use it.")
+    return CONFIG_PATH
+
+
+def _set_pin():
+    """A typed PIN for the phone keypad. Safer than a spoken phrase:
+    nothing to overhear on a room mic or a stream VOD."""
+    import getpass
+    print("Choose a PIN for the phone keypad: 4 to 10 digits.")
+    a = getpass.getpass("PIN: ")
+    b = getpass.getpass("Again: ")
+    a, b = a.strip(), b.strip()
+    if a != b:
+        print("Not set: the two didn't match.")
+        return 1
+    if not (a.isdigit() and 4 <= len(a) <= 10):
+        print("Not set: digits only, 4 to 10 of them.")
+        return 1
+    print(f"PIN set in {_write_hash(a)}. Restart the voice line to use it.")
     return 0
 
 
 if __name__ == "__main__":
+    if "--set-pin" in sys.argv:
+        sys.exit(_set_pin())
     if "--set-passcode" in sys.argv:
         sys.exit(_set_passcode())
-    print("usage: python -m backtalk.remote --set-passcode")
+    print("usage: python -m backtalk.remote --set-pin | --set-passcode")
