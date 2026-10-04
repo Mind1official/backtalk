@@ -146,6 +146,11 @@ DEFAULTS = {
     "music_enter_s": 60,
     "music_exit_quiet_s": 3,
     "music_utterance_cap_s": 15,
+    # How tall the visualizer bars run. The spectrum is normalised to a
+    # decaying peak so the bars stay lively at any volume, which on a
+    # loud source pins them all near the top; this scales them back
+    # down afterwards. 1.0 is full height.
+    "music_gain": 0.6,
     # REMOTE VOICE (remote.py): a hold-to-talk page for a phone or
     # tablet, served on 127.0.0.1 only and reached from outside through
     # a Cloudflare Tunnel with Access in front. OFF by default. Two locks:

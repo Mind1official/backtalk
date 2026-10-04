@@ -54,6 +54,7 @@ class MusicDetector:
         self._spec_buf: list = []
         self._peak = 1e-6
         self._pub_every = 4             # spectrum every 4 frames (~8/s)
+        self.gain = float(CFG.get("music_gain") or 0.6)
 
     @property
     def sound_run_s(self) -> float:
@@ -138,4 +139,9 @@ class MusicDetector:
         bands = np.log1p(bands * 50)
         # a slowly decaying peak keeps the bars full-height at any volume
         self._peak = max(float(bands.max()), self._peak * 0.995, 1e-6)
-        signals.set_music(True, np.clip(bands / self._peak, 0, 1).round(3).tolist())
+        # The peak normalisation above deliberately fills the bars at any
+        # volume, which on a loud source pins every band near the top.
+        # music_gain scales the normalised bands back down afterwards so
+        # the visualizer has somewhere to go: 1.0 is the old behaviour.
+        out = np.clip(bands / self._peak * self.gain, 0, 1)
+        signals.set_music(True, out.round(3).tolist())
