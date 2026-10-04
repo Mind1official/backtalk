@@ -411,6 +411,16 @@ def transcribe(pcm: np.ndarray) -> str:
 class Ears:
     def __init__(self, aggressiveness: int = 2, silence_ms: int = 480):
         self.vad = webrtcvad.Vad(aggressiveness)
+        # MUSIC MODE (music.py): lives on the Ears so its clock and state
+        # survive between listen_once calls. _hist is the last few
+        # seconds, replayed when music ends on speech so the start of
+        # the first sentence isn't lost.
+        from collections import deque
+        from backtalk.music import MusicDetector
+        self.music = MusicDetector(RATE)
+        self._hist: deque = deque(maxlen=int(8000 / FRAME_MS))  # = the
+        # detector's speech window, so the first sentence fits
+        self._dropping = False
         self.silence_frames = silence_ms // FRAME_MS
 
     def listen_once(self, gate=None, timeout_s: float | None = None,
@@ -447,6 +457,36 @@ class Ears:
                 # floor says "is this loud enough to be THIS room's
                 # speech". A knock passes the first and fails the second.
                 level = _dbfs(mono)
+                self.music.feed(mono, level)
+                self._hist.append(mono)
+                if self.music.on:
+                    # music mode: nothing is transcribed, lyrics included
+                    in_utterance = False
+                    frames, ring = [], []
+                    speech_run = speech_total = silence_run = 0
+                    continue
+                if self.music.exited_on_speech:
+                    # the music ended because someone started talking:
+                    # their first words are already in _hist, so open the
+                    # utterance with them instead of losing them
+                    self.music.exited_on_speech = False
+                    in_utterance = True
+                    frames = list(self._hist)[-self.music.speech_frames:]
+                    speech_total, silence_run = OPEN_FRAMES, 0
+                    continue
+                if CFG.get("music_mode") and self.music.sound_run_s >                         float(CFG.get("music_utterance_cap_s") or 15):
+                    # unbroken sound longer than any sentence: music
+                    # before music mode has kicked in. Drop it, or the
+                    # lyrics get answered. Logged once per stretch.
+                    if not self._dropping:
+                        self._dropping = True
+                        log("[ears] unbroken sound past the sentence cap: "
+                            "treating it as music, not listening")
+                    in_utterance = False
+                    frames, ring = [], []
+                    speech_run = speech_total = silence_run = 0
+                    continue
+                self._dropping = False
                 if not in_utterance:
                     floor.update(level)
                 is_speech = (self.vad.is_speech(mono.tobytes(), RATE)

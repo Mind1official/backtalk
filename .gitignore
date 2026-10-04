@@ -22,3 +22,9 @@ show.json
 .python-version
 # Config backups the setup wizard leaves behind.
 *.json.*.bak
+
+# runtime logs and session state, written while she runs
+.activity_log
+.backtalk_session
+.transcript_last
+.transcript_log

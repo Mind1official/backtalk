@@ -343,6 +343,9 @@ class Mouth:
         self._out: sd.OutputStream | None = None
         self._out_rate: int | None = None
         self.ducker = Ducker()  # public: PTT ducks for the USER's voice too
+        # REMOTE SINK (remote.py sets it): while sink.active() is true,
+        # speech goes to the remote page instead of the local speakers.
+        self.remote = None
         self._worker = threading.Thread(target=self._run, daemon=True)
         self._worker.start()
 
@@ -375,6 +378,8 @@ class Mouth:
                 self._q.get_nowait()
         except queue.Empty:
             pass
+        if self.remote is not None:
+            self.remote.flush()
 
     def shutdown(self):
         """Exit path: stop playback and restore the music SYNCHRONOUSLY
@@ -483,6 +488,9 @@ class Mouth:
                 break
         if rate is None:
             return
+        if self.remote is not None and self.remote.active():
+            self._play_remote(rate, head, gen, directions, block)
+            return
         try:
             out = self._get_out(rate)
             # AUDIO STARTS HERE: the head buffer is full and the first write
@@ -515,6 +523,38 @@ class Mouth:
         except Exception:
             self._drop_out()
             raise
+
+
+    def _play_remote(self, rate, head, gen, directions, block):
+        """Send speech to the remote page instead of the speakers, paced
+        at real time (a small lead keeps the far end's buffer fed), so
+        "speaking", the waveform and barge-in stay honest exactly as
+        they do locally. Worker-thread only."""
+        import itertools
+        import time as _t
+        from backtalk import signals
+        if directions:
+            signals.direction(directions)
+        lead = 0.35
+        t_end = _t.monotonic()
+        for pcm in itertools.chain(head, (p for _, p in gen)):
+            for i in range(0, len(pcm), block):
+                if self._stop.is_set():
+                    self.remote.flush()
+                    return
+                blk = pcm[i:i + block]
+                self.remote.send_audio(rate, blk)
+                signals.feed_waveform(blk)
+                t_end = max(t_end, _t.monotonic()) + len(blk) / rate
+                wait = t_end - _t.monotonic() - lead
+                if wait > 0:
+                    _t.sleep(wait)
+        # hold "speaking" until the far end has actually played it out
+        while _t.monotonic() < t_end:
+            if self._stop.is_set():
+                self.remote.flush()
+                return
+            _t.sleep(0.05)
 
 
 if __name__ == "__main__":

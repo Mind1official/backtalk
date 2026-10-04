@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0b0e">
+<title>Voice Line</title>
+<style>
+  :root { --bg:#0b0b0e; --text:#ececf0; --muted:#80808c; --accent:#B60232; --glow:#ff2d5a; }
+  * { box-sizing:border-box; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none;
+      -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+               font:16px/1.4 system-ui, -apple-system, sans-serif; overflow:hidden; }
+  #stage { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+           justify-content:center; gap:28px; padding:env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+           touch-action:none; }
+  #orb { width:min(52vw, 260px); aspect-ratio:1; border-radius:50%;
+         background:radial-gradient(circle at 50% 45%, #ff4d72 0%, var(--accent) 45%, #3a0010 100%);
+         box-shadow:0 0 40px 4px rgba(182,2,50,.35); transition:transform .08s linear, box-shadow .3s, filter .3s; }
+  #orb.idle { filter:saturate(.55) brightness(.7); }
+  #orb.listening { box-shadow:0 0 70px 18px rgba(255,45,90,.55); }
+  #orb.thinking { animation:breathe 1.6s ease-in-out infinite; }
+  #orb.locked { filter:grayscale(1) brightness(.5); }
+  @keyframes breathe { 50% { transform:scale(.93); filter:brightness(.8); } }
+  #status { font-weight:700; letter-spacing:.14em; font-size:13px; color:var(--muted); text-transform:uppercase;
+            text-align:center; min-height:20px; }
+  #hint { color:var(--muted); font-size:15px; text-align:center; max-width:340px; min-height:42px; }
+  #log { position:fixed; left:0; right:0; bottom:0; max-height:32vh; overflow:hidden; padding:12px 16px
+         calc(12px + env(safe-area-inset-bottom)); font-size:14px; color:#b9b9c4;
+         background:linear-gradient(transparent, rgba(11,11,14,.95) 30%); pointer-events:none; }
+  #log p { margin:4px 0; }
+  #log b { color:var(--glow); font-weight:600; }
+  #bye { position:fixed; top:calc(10px + env(safe-area-inset-top)); right:12px; z-index:3; font:700 12px system-ui;
+         letter-spacing:.12em; color:var(--muted); background:transparent; border:1px solid #2c2c35;
+         border-radius:99px; padding:8px 12px; display:none; }
+  #gate { position:fixed; inset:0; z-index:5; display:flex; align-items:center; justify-content:center;
+          background:var(--bg); }
+  #gate button { font:800 18px system-ui; letter-spacing:.1em; color:#fff; background:var(--accent);
+                 border:0; border-radius:14px; padding:20px 34px; }
+</style>
+</head>
+<body>
+<div id="gate"><button id="start">START VOICE LINE</button></div>
+<button id="bye">SIGN OFF</button>
+<div id="stage">
+  <div id="orb" class="idle"></div>
+  <div id="status">Connecting</div>
+  <div id="hint"></div>
+</div>
+<div id="log"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+let ws, ctx, stream, rec, chunks = [], authed = false, lockedUntil = 0, name = "Janice";
+let nextTime = 0, sources = [], holding = false, retry = 0, analyser, levelBuf;
+
+function setStatus(s, hint) {
+  $("status").textContent = s;
+  if (hint !== undefined) $("hint").textContent = hint;
+}
+function orb(cls) { $("orb").className = cls; }
+function idleHint() {
+  if (Date.now() < lockedUntil) return;
+  if (!authed) setStatus("Locked", "Hold anywhere and say the passcode.");
+  else setStatus("Ready", `Hold anywhere to talk to ${name}.`);
+}
+
+// ---------- transcript ----------
+const lines = [];
+function addLine(who, text, append) {
+  if (append && lines.length && lines[lines.length - 1].who === who) lines[lines.length - 1].text += " " + text;
+  else lines.push({ who, text });
+  while (lines.length > 6) lines.shift();
+  $("log").innerHTML = lines.map(l => `<p><b>${l.who === "YOU" ? "You" : esc(l.who)}:</b> ${esc(l.text)}</p>`).join("");
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---------- her voice ----------
+function playPcm(buf) {
+  const rate = new DataView(buf).getUint32(0, true);
+  const pcm = new Int16Array(buf, 4);
+  const ab = ctx.createBuffer(1, pcm.length, rate);
+  const ch = ab.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+  const src = ctx.createBufferSource();
+  src.buffer = ab; src.connect(analyser);
+  const t = Math.max(ctx.currentTime + 0.06, nextTime);
+  src.start(t); nextTime = t + ab.duration;
+  sources.push(src);
+  src.onended = () => { sources = sources.filter(s => s !== src); };
+}
+function flush() {
+  sources.forEach(s => { try { s.stop(); } catch (e) {} });
+  sources = []; nextTime = 0;
+}
+function pulse() {   // the orb breathes with her voice
+  if (analyser) {
+    analyser.getFloatTimeDomainData(levelBuf);
+    let sum = 0; for (const v of levelBuf) sum += v * v;
+    const lvl = Math.min(1, Math.sqrt(sum / levelBuf.length) * 6);
+    if ($("orb").className === "speaking") $("orb").style.transform = `scale(${1 + lvl * 0.18})`;
+    else if ($("orb").className !== "thinking") $("orb").style.transform = "";
+  }
+  requestAnimationFrame(pulse);
+}
+
+// ---------- socket ----------
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => {
+    retry = 0;
+    const tok = sessionStorage.getItem("vl_token");
+    if (tok) ws.send(JSON.stringify({ t: "auth", token: tok }));
+  };
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== "string") { playPcm(ev.data); return; }
+    const m = JSON.parse(ev.data), d = m.data;
+    switch (m.t) {
+      case "hello":
+        name = d.name; authed = false; $("bye").style.display = "none";
+        if (d.locked) lock(d.locked); else idleHint();
+        if (!d.has_passcode) setStatus("Not set up", "No passcode is set on the PC yet.");
+        break;
+      case "auth":
+        if (d.ok) {
+          authed = true; $("bye").style.display = "block";
+          if (d.token) sessionStorage.setItem("vl_token", d.token);
+          setStatus("Unlocked", `Hold anywhere to talk to ${name}.`);
+        } else {
+          sessionStorage.removeItem("vl_token"); authed = false;
+          if (d.left !== undefined) setStatus("Wrong passcode", `${d.left} ${d.left === 1 ? "try" : "tries"} left.`);
+          else idleHint();
+        }
+        break;
+      case "locked": lock(d); break;
+      case "state":
+        if (!holding) {
+          orb(d === "speaking" ? "speaking" : d === "thinking" ? "thinking" : "idle");
+          if (d === "thinking") setStatus("Thinking", "");
+          else if (d === "speaking") setStatus("Speaking", "Touch to interrupt.");
+          else if (authed) idleHint();
+        }
+        break;
+      case "transcript": addLine(d.speaker, d.text, d.append); break;
+      case "heard": break;   // the transcript event carries it
+      case "flush": flush(); break;
+      case "notice": setStatus(authed ? "Ready" : "Locked", d); break;
+    }
+  };
+  ws.onclose = () => {
+    setStatus("Reconnecting", "");
+    setTimeout(connect, Math.min(8000, 500 * 2 ** retry++));
+  };
+}
+function lock(secs) {
+  lockedUntil = Date.now() + secs * 1000; orb("locked");
+  const mins = Math.ceil(secs / 60);
+  setStatus("Locked out", `Too many wrong passcodes. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`);
+  setTimeout(() => { orb("idle"); idleHint(); }, secs * 1000);
+}
+
+// ---------- hold to talk ----------
+const mime = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find(t => window.MediaRecorder && MediaRecorder.isTypeSupported(t)) || "";
+function down(e) {
+  e.preventDefault();
+  if (holding || !stream || ws.readyState !== 1 || Date.now() < lockedUntil) return;
+  holding = true;
+  if (authed) { ws.send(JSON.stringify({ t: "press" })); flush(); }
+  chunks = [];
+  rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+  rec.ondataavailable = (ev) => { if (ev.data.size) chunks.push(ev.data); };
+  rec.onstop = async () => {
+    const blob = new Blob(chunks, { type: rec.mimeType });
+    if (blob.size > 0 && ws.readyState === 1) ws.send(await blob.arrayBuffer());
+  };
+  rec.start();
+  orb("listening"); setStatus("Listening", authed ? "Let go to send." : "Say the passcode, then let go.");
+  if (navigator.vibrate) navigator.vibrate(15);
+}
+function up(e) {
+  e.preventDefault();
+  if (!holding) return;
+  holding = false;
+  if (rec && rec.state !== "inactive") rec.stop();
+  orb("thinking"); setStatus(authed ? "Sending" : "Checking", "");
+}
+const stage = $("stage");
+stage.addEventListener("pointerdown", down);
+stage.addEventListener("pointerup", up);
+stage.addEventListener("pointercancel", up);
+stage.addEventListener("pointerleave", up);
+stage.addEventListener("contextmenu", (e) => e.preventDefault());
+
+$("bye").onclick = () => {
+  if (ws.readyState === 1) ws.send(JSON.stringify({ t: "bye" }));
+  sessionStorage.removeItem("vl_token"); authed = false; flush();
+};
+
+// Browsers only allow the mic and audio after a real tap, so one tap opens both.
+$("start").onclick = async () => {
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    await ctx.resume();
+    analyser = ctx.createAnalyser(); analyser.fftSize = 512;
+    levelBuf = new Float32Array(analyser.fftSize);
+    analyser.connect(ctx.destination);
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    try { await navigator.wakeLock?.request("screen"); } catch (e) {}
+    $("gate").style.display = "none";
+    connect(); pulse();
+  } catch (e) {
+    $("start").textContent = "MIC BLOCKED - CHECK PERMISSIONS";
+  }
+};
+</script>
+</body>
+</html>

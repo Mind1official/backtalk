@@ -75,8 +75,33 @@ _last_waveform_write = 0.0
 _static_proc: subprocess.Popen | None = None
 
 
+# REMOTE TAP: in-process listeners (the remote voice page) hear state
+# changes and transcript lines the moment they happen, no file polling.
+# A listener must be cheap and thread-safe; one that raises is dropped.
+_listeners: list = []
+# True while a remote session owns the voice: local speakers and the
+# local thinking sound stay silent so the empty room isn't talked at.
+REMOTE_MUTE = False
+
+
+def add_listener(fn):
+    _listeners.append(fn)
+
+
+def _emit(kind: str, data):
+    for fn in list(_listeners):
+        try:
+            fn(kind, data)
+        except Exception:
+            try:
+                _listeners.remove(fn)
+            except ValueError:
+                pass
+
+
 def set_state(name: str):
     """Write the state. Never raises — the show must go on."""
+    _emit("state", name)
     try:
         with open(_STATE_FILE, "w") as f:
             f.write(name)
@@ -88,6 +113,23 @@ def set_state(name: str):
                 f.write(name)
         except OSError:
             pass
+
+
+_MUSIC_FILE = os.path.join(_DIR, ".voice_music")
+
+
+def set_music(on: bool, bands=None):
+    """Music mode (music.py): {ts, on, bands}. bands is a 0..1 spectrum
+    for the face's visualizer while music plays. The face treats a
+    reading older than a few seconds as off, so a voice line that dies
+    mid-song can't leave the visualizer up forever. Never raises."""
+    _emit("music", {"on": on, "bands": bands})
+    try:
+        with open(_MUSIC_FILE, "w") as f:
+            f.write(json.dumps({"ts": time.time(), "on": bool(on),
+                                "bands": bands or []}))
+    except OSError:
+        pass
 
 
 def feed_waveform(pcm: np.ndarray):
@@ -258,6 +300,7 @@ def transcript(speaker: str, text: str, append: bool = False):
     line = " ".join(str(text).split()).strip()
     if not line:
         return
+    _emit("transcript", {"speaker": speaker, "text": line, "append": append})
     try:
         lines = []
         if os.path.exists(_TRANSCRIPT_FILE):
@@ -299,6 +342,8 @@ def _player_cmd(path: str) -> list[str] | None:
 def static_start():
     """Optional thinking sound — plays while the brain works."""
     global _static_proc
+    if REMOTE_MUTE:
+        return
     if not _THINKING_SOUND or not os.path.exists(_THINKING_SOUND):
         return
     static_stop()
