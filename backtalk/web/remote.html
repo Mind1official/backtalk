@@ -28,10 +28,15 @@
   #status { font-weight:700; letter-spacing:.14em; font-size:13px; color:var(--muted); text-transform:uppercase;
             text-align:center; min-height:20px; }
   #hint { color:var(--muted); font-size:15px; text-align:center; max-width:340px; min-height:42px; }
-  #log { position:fixed; left:0; right:0; bottom:0; max-height:32vh; overflow:hidden; padding:12px 16px
+  /* Flex column packed to the bottom: the box fills upward, so the NEWEST
+     line always sits against the bottom edge and old text is what gets
+     clipped off the top. Without this the text filled top-down and the
+     newest lines overflowed out the bottom, invisible (2026-10-04). */
+  #log { position:fixed; left:0; right:0; bottom:0; max-height:32vh; overflow:hidden;
+         display:flex; flex-direction:column; justify-content:flex-end; padding:12px 16px
          calc(12px + env(safe-area-inset-bottom)); font-size:14px; color:#b9b9c4;
          background:linear-gradient(transparent, rgba(11,11,14,.95) 30%); pointer-events:none; }
-  #log p { margin:4px 0; }
+  #log p { margin:4px 0; flex:none; }   /* flex children shrink by default; don't squash the text */
   #log b { color:var(--glow); font-weight:600; }
   #bye { position:fixed; top:calc(10px + env(safe-area-inset-top)); right:12px; z-index:3; font:700 12px system-ui;
          letter-spacing:.12em; color:var(--muted); background:transparent; border:1px solid #2c2c35;
