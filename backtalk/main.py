@@ -144,7 +144,7 @@ _YES = {"yes", "yeah", "yep", "yup", "sure", "approve", "approved",
         "permission granted", "granted", "you have permission",
         "you may", "allowed", "allow it", "confirmed", "affirmative"}
 # Binaries whose first word says nothing about what they do. A rule for
-# one of these has to name the subcommand too (see _perm_rule).
+# one of these has to name the subcommand too (see _perm_rules).
 _SUBCOMMAND_TOOLS = {"git", "gh", "npm", "npx", "pnpm", "yarn", "pip",
                      "pip3", "docker", "cargo", "go", "dotnet", "py",
                      "python", "python3", "winget", "choco", "aws",
@@ -238,42 +238,141 @@ def _is_always(said):
     return False
 
 
-def _perm_rule(tool, tool_input):
-    """The allowlist rule that covers this call's KIND, or None if we
-    can't name one safely. Deliberately narrow: a shell rule is scoped
-    to the single leading executable, never the whole Bash tool, so
-    approving one `git status` can never also pre-approve `rm`. A
-    chained command gets NO rule at all -- its parts are unknowable
-    from the first word, and that is exactly the case worth asking
-    about every time."""
+#: Programs that may be APPROVED but never PRE-approved. A standing rule
+#: for one of these is a door that stays open: the whole point of a tap
+#: that says "and stop asking" is convenience for the boring cases, and
+#: none of these are boring. Approving the call in front of you still
+#: works exactly as before -- this only refuses to write the rule.
+_NEVER_PREAPPROVE = {
+    # destroys files
+    "rm", "rmdir", "rd", "del", "erase", "shred", "truncate", "dd",
+    "mkfs", "format", "diskpart",
+    # moves or overwrites without a trace
+    "mv", "move", "ren", "rename",
+    # kills things that are running
+    "kill", "pkill", "killall", "taskkill", "shutdown", "reboot",
+    # changes who can do what
+    "chmod", "chown", "icacls", "takeown", "net", "sc", "setx", "reg",
+    # reaches the outside world unattended
+    "ssh", "scp", "rsync", "curl", "wget", "ftp", "nc",
+}
+#: The same idea where the danger lives in the subcommand, so the bare
+#: program is fine to pre-approve and this verb is not.
+_NEVER_PREAPPROVE_SUB = {
+    ("git", "push"), ("git", "reset"), ("git", "clean"),
+    ("git", "rebase"), ("git", "merge"), ("git", "tag"),
+    ("npm", "publish"), ("pnpm", "publish"), ("yarn", "publish"),
+    ("pip", "install"), ("pip3", "install"), ("npm", "install"),
+    ("docker", "push"), ("docker", "rm"), ("docker", "rmi"),
+    ("gh", "release"), ("gh", "repo"), ("gh", "pr"),
+    ("wrangler", "deploy"), ("kubectl", "delete"), ("kubectl", "apply"),
+    ("systemctl", "stop"), ("systemctl", "disable"),
+}
+
+
+def _perm_rule_one(tool, cmd):
+    """The rule for ONE shell command, or None if it can't be named."""
+    parts = cmd.split()
+    first = (parts or [""])[0].rsplit("/", 1)[-1]
+    if not first or not all(c.isalnum() or c in "-_." for c in first):
+        return None
+    # Multi-verb tools MUST carry their subcommand into the rule.
+    # Scoping to the bare executable would turn one approved
+    # `git status` into standing permission for `git push` -- the
+    # verb is where the danger lives, not the binary.
+    if first in _NEVER_PREAPPROVE:
+        return None
+    if first in _SUBCOMMAND_TOOLS:
+        sub = parts[1] if len(parts) > 1 else ""
+        if not sub or not sub.replace("-", "").isalnum():
+            return None
+        if (first, sub) in _NEVER_PREAPPROVE_SUB:
+            return None
+        return f"{tool}({first} {sub}:*)"
+    return f"{tool}({first}:*)"
+
+
+def _posix_abs(path):
+    """A filesystem-absolute path in the form the allowlist matches.
+    Windows paths normalize to POSIX with a lower-case drive letter
+    (`E:\Brain` -> `/e/Brain`), and an absolute rule carries a DOUBLE
+    leading slash -- a single one anchors at the settings file instead,
+    which would silently scope the rule to the wrong place."""
+    from pathlib import Path
+    try:
+        q = Path(path).resolve()
+    except (OSError, ValueError):
+        return None
+    txt = str(q).replace("\\", "/")
+    drive, colon, rest = txt.partition(":")
+    if colon and len(drive) == 1 and drive.isalpha():
+        txt = f"/{drive.lower()}{rest}"
+    if not txt.startswith("/"):
+        return None
+    return "/" + txt.rstrip("/")
+
+
+def _perm_rules(tool, tool_input):
+    """EVERY allowlist rule this call needs, or None if any part of it
+    can't be named safely. All-or-nothing on purpose: a chained command
+    is pre-approved only when every one of its parts can be scoped the
+    same narrow way, so one nameable part can never smuggle an
+    unnameable one onto the allowlist.
+
+    Deliberately narrow: a shell rule is scoped to the single leading
+    executable, never the whole Bash tool, so approving one `git status`
+    can never also pre-approve `rm`."""
     d = tool_input or {}
     if tool in ("Bash", "PowerShell"):
         cmd = " ".join(str(d.get("command", "")).split())
-        if any(m in cmd for m in _CHAIN_MARKS):
+        # Command substitution stays refused: what runs inside `$(...)`
+        # or backticks is genuinely unknowable from the text around it,
+        # so there is no honest rule to write for it.
+        if "$(" in cmd or "`" in cmd:
             return None
-        parts = cmd.split()
-        first = (parts or [""])[0].rsplit("/", 1)[-1]
-        if not first or not all(c.isalnum() or c in "-_." for c in first):
-            return None
-        # Multi-verb tools MUST carry their subcommand into the rule.
-        # Scoping to the bare executable would turn one approved
-        # `git status` into standing permission for `git push` -- the
-        # verb is where the danger lives, not the binary.
-        if first in _SUBCOMMAND_TOOLS:
-            sub = parts[1] if len(parts) > 1 else ""
-            if not sub or not sub.replace("-", "").isalnum():
-                return None
-            return f"{tool}({first} {sub}:*)"
-        return f"{tool}({first}:*)"
+        parts = [cmd]
+        # (the command is already whitespace-collapsed above, so
+        # there are no newlines left to split on)
+        for mark in ("&&", "||", ";", "|"):
+            nxt = []
+            for seg in parts:
+                nxt.extend(seg.split(mark))
+            parts = nxt
+        rules = []
+        for seg in parts:
+            seg = seg.strip()
+            if not seg:
+                continue
+            r = _perm_rule_one(tool, seg)
+            if r is None:
+                return None       # one bad part refuses the whole chain
+            if r not in rules:
+                rules.append(r)
+        return rules or None
     if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
-        return None     # writing files is never blanket-approved here
-    return tool if tool.isidentifier() else None
+        # Scoped to the file's OWN folder, never the tool: blessing an
+        # edit in the vault must not bless an edit on the system drive.
+        # The rule is always emitted as Edit(...) whichever write tool
+        # asked -- Claude Code checks file paths against Edit and Read
+        # rules ONLY, and accepts a Write(path) rule it then never
+        # consults (it warns at startup and asks forever).
+        raw = d.get("file_path") or d.get("notebook_path") or ""
+        if not raw:
+            return None
+        import os
+        folder = _posix_abs(os.path.dirname(str(raw)) or ".")
+        if not folder or folder.count("/") < 3:
+            return None       # a drive root is not a scope, it's the wall
+        return [f"Edit({folder}/**)"]
+    return [tool] if tool.isidentifier() else None
 
 
-def _add_allow_rule(rule):
-    """Append a rule to the allowlist in the agent's settings.json.
+def _add_allow_rules(rules):
+    """Append rules to the allowlist in the agent's settings.json.
     Returns True on a persisted write. A file that fails to parse is
-    left alone rather than rewritten from scratch."""
+    left alone rather than rewritten from scratch. Written in ONE pass:
+    a chained command's rules must all land or none of them, so a
+    half-written allowlist can never approve part of a chain."""
     from pathlib import Path
     sp = Path(CFG.get("agent_dir") or ".") / ".claude" / "settings.json"
     try:
@@ -285,15 +384,16 @@ def _add_allow_rule(rule):
         return False
     perms = data.setdefault("permissions", {})
     allow = perms.setdefault("allow", [])
-    if rule not in allow:
-        allow.append(rule)
+    for rule in rules:
+        if rule not in allow:
+            allow.append(rule)
     try:
         sp.parent.mkdir(parents=True, exist_ok=True)
         sp.write_text(json.dumps(data, indent=2) + chr(10), encoding="utf-8")
     except OSError as e:
         log(f"[perm]   settings write failed: {e}")
         return False
-    log(f"[perm]   allowlisted {rule}")
+    log(f"[perm]   allowlisted {', '.join(rules)}")
     return True
 
 
@@ -428,13 +528,15 @@ def make_permission_gate(mouth):
                 # the rule, then SAY what was widened. Silence here
                 # would let the allowlist grow without the person ever
                 # hearing which door they just left open.
-                rule = _perm_rule(tool, tool_input)
-                if rule is None:
+                rules = _perm_rules(tool, tool_input)
+                if rules is None:
                     mouth.say("Doing it. I can't safely pre-approve "
                               "that kind, so I'll still ask next time.")
-                elif _add_allow_rule(rule):
-                    mouth.say(f"Doing it, and I've allowed {rule} from "
-                              "now on. It takes effect next restart.")
+                elif _add_allow_rules(rules):
+                    spoken = " and ".join(rules)
+                    mouth.say(f"Doing it, and I've allowed {spoken} "
+                              "from now on. It takes effect next "
+                              "restart.")
                 else:
                     mouth.say("Doing it, but I couldn't save the rule, "
                               "so I'll ask again next time.")
@@ -977,6 +1079,34 @@ async def amain():
                 return
         log("[remote] permissions -> ask for the remote session")
 
+    async def remote_bypass():
+        """Turn the gate off for the CURRENT remote session only.
+
+        Reached only after remote.py has checked the spoken passcode
+        against the stored hash, with the same three-strike lockout that
+        guards opening a session at all -- the button is a second lock,
+        not a confirm tap.
+
+        This flips the SDK's own mode rather than just setting the
+        auto-approve flag, because an ask-mode session lets the CLI
+        decide some calls BEFORE our gate is ever consulted: the flag
+        alone would leave those still prompting, which is the exact
+        half-on state the "stop asking for permission" verb was fixed
+        for. Returns whether it took; False keeps the gate up and says
+        so out loud.
+
+        Lock 3 is NOT removed by this. remote_begin() still forces every
+        new takeover to "ask", so a bypass dies with the session that
+        asked for it and can never be inherited by the next phone."""
+        try:
+            await brain.set_permission_mode("bypassPermissions")
+        except Exception as e:
+            log(f"[remote] bypass flip failed: {e}")
+            return False
+        _AUTOAPPROVE["on"] = True
+        log("[remote] permissions -> bypass for this remote session")
+        return True
+
     async def remote_end():
         if _REMOTE_PREV["autoapprove"] is not None:
             # the SDK stays in ask mode; auto-approve rides the gate,
@@ -984,10 +1114,26 @@ async def amain():
             _AUTOAPPROVE["on"] = _REMOTE_PREV["autoapprove"]
             _REMOTE_PREV["autoapprove"] = None
             log("[remote] permissions restored")
+        # If the phone bypassed this session, the SDK is sitting in
+        # bypassPermissions and would stay there for the LOCAL session
+        # too. Put it back to "ask" unless the desk itself booted in
+        # bypass, in which case the line above already restored the
+        # local state and the mode is where it belongs.
+        if CFG_BOOT_MODE != "bypassPermissions":
+            try:
+                await brain.set_permission_mode("ask")
+                log("[remote] gate back up for the local session")
+            except Exception as e:
+                # Loud, because the quiet version is a machine left wide
+                # open after a phone hung up.
+                log(f"[remote] COULD NOT RESTORE THE GATE ({e})")
+                mouth.say("Heads up: the remote session ended but I "
+                          "could not put the permission checks back. "
+                          "Restart me before trusting them.")
 
     remote_srv = await remote_mod.start(
         asyncio.get_running_loop(), mouth, typed_q, remote_begin,
-        remote_end, QUIT_PHRASES)
+        remote_end, QUIT_PHRASES, remote_bypass)
     if remote_only and remote_srv is None:
         # No local ears and no phone to reach: there is no way in at all.
         # Usually the same config is already running in another window.
