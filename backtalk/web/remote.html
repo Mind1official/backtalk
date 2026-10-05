@@ -80,6 +80,29 @@
   #askrow2 button { flex:1; font:700 12px system-ui; letter-spacing:.08em; border:0;
                     padding:12px; border-radius:12px; color:var(--muted);
                     background:#1b1b22; }
+  /* BYPASS. Parked away from the ask panel on purpose: it is not an
+     answer to the question on screen, it is a decision to stop being
+     asked. Quiet until it is armed, and it always costs the passcode. */
+  #bypass { position:fixed; left:18px; bottom:calc(18px + env(safe-area-inset-bottom));
+            z-index:5; display:none; font:700 10px system-ui; letter-spacing:.12em;
+            color:var(--muted); background:#15151b; border:1px solid #2c2c35;
+            border-radius:11px; padding:10px 13px; }
+  #bypass.on { display:block; }
+  #bypass.live { color:#fff; background:var(--accent); border-color:var(--accent); }
+  #bp { position:fixed; inset:0; z-index:9; display:none; background:rgba(8,8,11,.94);
+        padding:28px 22px calc(28px + env(safe-area-inset-bottom)); }
+  #bp.on { display:block; }
+  #bptitle { font:800 15px system-ui; letter-spacing:.04em; margin-bottom:10px; }
+  #bpbody { color:var(--muted); font-size:14px; line-height:1.45; margin-bottom:18px; }
+  #bpcode { width:100%; box-sizing:border-box; font:600 18px system-ui; color:var(--text);
+            background:#15151b; border:1px solid #2c2c35; border-radius:12px;
+            padding:15px; margin-bottom:12px; }
+  #bpmsg { color:var(--glow); font-size:13px; min-height:18px; margin-bottom:12px; }
+  #bprow { display:flex; gap:12px; }
+  #bprow button { flex:1; font:800 15px system-ui; border:0; border-radius:13px;
+                  padding:16px 0; color:#fff; }
+  #bpgo { background:var(--accent); }
+  #bpno { background:#2c2c35; color:var(--text); }
 </style>
 </head>
 <body>
@@ -108,10 +131,25 @@
   <div id="askrow"><button id="no">NO</button><button id="yes">YES</button></div>
   <div id="askrow2"><button id="always">YES, AND STOP ASKING FOR THIS</button></div>
 </div>
+<button id="bypass">BYPASS CHECKS</button>
+<div id="bp">
+  <div id="bptitle">Turn off permission checks?</div>
+  <div id="bpbody">For THIS remote session only. Anything can then run
+    without asking, including things that delete or publish. The checks
+    come back the moment this session ends, and a new session always
+    starts with them on. Your passcode is required.</div>
+  <input id="bpcode" type="password" inputmode="text" autocomplete="off"
+         autocapitalize="off" spellcheck="false" placeholder="Passcode">
+  <div id="bpmsg"></div>
+  <div id="bprow"><button id="bpno">CANCEL</button><button id="bpgo">TURN OFF</button></div>
+</div>
 <div id="log"></div>
 <script>
 const $ = (id) => document.getElementById(id);
 let ws, ctx, stream, rec, chunks = [], authed = false, lockedUntil = 0, name = "Janice";
+// Mirrors the PC's per-session flag. Never trusted as authority -- the
+// PC decides; this only keeps the button honest about what is on.
+let bypassed = false;
 let nextTime = 0, sources = [], holding = false, retry = 0, analyser, levelBuf;
 
 function setStatus(s, hint) {
@@ -213,6 +251,31 @@ function answerAsk(word) {
 }
 $("yes").onclick = () => answerAsk("yes");
 $("no").onclick = () => answerAsk("no");
+
+// ---------- bypass: a second lock, not a confirm tap ----------
+// The passcode goes straight to the PC, which holds the only copy of
+// the hash and the only lockout counter. Nothing is checked here: a
+// check in the page is a check an attacker owns.
+function bypassBtn(show, live) {
+  const b = $("bypass");
+  b.className = (show ? "on" : "") + (live ? " live" : "");
+  b.textContent = live ? "CHECKS OFF" : "BYPASS CHECKS";
+}
+function showBp(on) {
+  $("bp").className = on ? "on" : "";
+  $("bpmsg").textContent = "";
+  $("bpcode").value = "";
+  if (on) $("bpcode").focus();
+}
+$("bypass").onclick = () => { if (!bypassed) showBp(true); };
+$("bpno").onclick = () => showBp(false);
+$("bpgo").onclick = () => {
+  const code = $("bpcode").value.trim();
+  if (!code) { $("bpmsg").textContent = "Say or type your passcode."; return; }
+  if (ws.readyState === 1) ws.send(JSON.stringify({ t: "bypass", data: code }));
+  $("bpcode").value = "";
+  $("bpmsg").textContent = "Checking with the PC...";
+};
 // Sends a word the PC's gate already understands, like the other two --
 // the widening is decided and persisted there, never here.
 $("always").onclick = () => answerAsk("always");
@@ -238,6 +301,7 @@ function connect() {
     switch (m.t) {
       case "hello":
         name = d.name; authed = false; $("bye").style.display = "none";
+        bypassed = false; bypassBtn(false, false); showBp(false);
         showPad(true); showAsk(null);
         if (d.locked) lock(d.locked); else { idleHint(); padMsg("Enter your PIN"); }
         if (!d.has_passcode) { showPad(false); setStatus("Not set up", "No PIN is set on the PC yet."); }
@@ -245,10 +309,12 @@ function connect() {
       case "auth":
         if (d.ok) {
           authed = true; $("bye").style.display = "block"; showPad(false);
+          bypassed = false; bypassBtn(true, false);
           if (d.token) localStorage.setItem("vl_token", d.token);
           setStatus("Unlocked", `Hold anywhere to talk to ${name}.`);
         } else {
           localStorage.removeItem("vl_token"); authed = false; showPad(true);
+          bypassed = false; bypassBtn(false, false); showBp(false);
           if (d.left !== undefined) {
             setStatus("Wrong PIN", `${d.left} ${d.left === 1 ? "try" : "tries"} left.`);
             padMsg(`Wrong PIN - ${d.left} ${d.left === 1 ? "try" : "tries"} left.`, true);
@@ -256,6 +322,18 @@ function connect() {
         }
         break;
       case "ask": showAsk(d); break;
+      case "bypass":
+        if (d && d.ok) {
+          bypassed = true; bypassBtn(true, true); showBp(false);
+          setStatus("Checks off", "Until this session ends.");
+        } else {
+          bypassed = false; bypassBtn(authed, false);
+          const why = (d && d.why) || "That did not go through.";
+          $("bpmsg").textContent = (d && d.left !== undefined)
+            ? `${why} ${d.left} ${d.left === 1 ? "try" : "tries"} left.`
+            : why;
+        }
+        break;
       case "locked": showAsk(null); lock(d); break;
       case "state":
         if (!holding) {
@@ -319,6 +397,7 @@ stage.addEventListener("contextmenu", (e) => e.preventDefault());
 $("bye").onclick = () => {
   if (ws.readyState === 1) ws.send(JSON.stringify({ t: "bye" }));
   localStorage.removeItem("vl_token"); authed = false; flush(); showPad(true); showAsk(null);
+  bypassed = false; bypassBtn(false, false); showBp(false);
 };
 
 // Browsers only allow the mic and audio after a real tap, so one tap opens both.

@@ -111,12 +111,20 @@ def _decode(blob: bytes) -> np.ndarray:
 # ------------------------------------------------------------- server ---
 
 class Remote:
-    def __init__(self, loop, mouth, typed_q, on_begin, on_end, quit_phrases):
+    def __init__(self, loop, mouth, typed_q, on_begin, on_end, quit_phrases,
+                 on_bypass=None):
         self.loop = loop
         self.mouth = mouth
         self.typed_q = typed_q
         self.on_begin = on_begin        # async () -> None
         self.on_end = on_end            # async () -> None
+        # async () -> bool. Flips the LIVE session to bypass and returns
+        # whether it actually took. False means keep asking: a bypass
+        # that silently failed would be the worst of both worlds.
+        self.on_bypass = on_bypass
+        # Per-session, and that is the whole point of the lock: a new
+        # remote session always starts gated, whatever the last one did.
+        self.bypassed = False
         self.quit_phrases = [_norm(q) for q in quit_phrases]
         self.ws = None                  # the one live phone
         self.out_q: asyncio.Queue = asyncio.Queue()
@@ -172,6 +180,7 @@ class Remote:
         signals.static_stop()
         self.mouth.shut_up()            # nothing half-said at the desk
         self.mouth.remote = self
+        self.bypassed = False           # every takeover starts gated
         log("[remote] session live: PC speakers muted, local mic paused")
         await self.on_begin()
 
@@ -184,6 +193,7 @@ class Remote:
         signals.set_remote(False)
         self.mouth.shut_up()
         self.mouth.remote = None
+        self.bypassed = False
         log(f"[remote] session ended ({why}): back to local")
         await self.on_end()
 
@@ -321,6 +331,74 @@ class Remote:
             self.last_seen = time.time()
             log(f"[remote] permission answered by tap: {word}")
             self.typed_q.put(word)
+        elif t == "bypass":
+            # THE SECOND LOCK, REUSED ON PURPOSE. Turning the gate off
+            # for a remote session is at least as serious as opening one,
+            # so it is held to the SAME passcode, the same three-strike
+            # counter and the same 15-minute lockout -- not a confirm
+            # tap, which a hijacked live session would sail straight
+            # through. No passcode set on the PC means no bypass at all.
+            #
+            # Deliberately gated on a LIVE session: there is no session
+            # to bypass otherwise, and allowing it earlier would let the
+            # passcode turn the gate off before anyone took the floor.
+            if not STATE["active"]:
+                await self._send({"t": "bypass",
+                                  "data": {"ok": False,
+                                           "why": "No session is live."}})
+                return
+            now = time.time()
+            if now < self.locked_until:
+                await self._send({"t": "locked",
+                                  "data": int(self.locked_until - now)})
+                return
+            stored = CFG.get("remote_passcode_hash") or ""
+            if not stored:
+                await self._send({"t": "bypass", "data": {
+                    "ok": False,
+                    "why": "No passcode is set on the PC."}})
+                return
+            heard = str(m.get("data") or "")[:64]
+            if not (heard and check_passcode(heard, stored)):
+                self.fails += 1
+                log(f"[remote] bypass passcode rejected "
+                    f"({self.fails}/{MAX_FAILS})")
+                if self.fails >= MAX_FAILS:
+                    self.fails = 0
+                    self.locked_until = time.time() + LOCKOUT_S
+                    log("[remote] LOCKED for 15 minutes after 3 bad "
+                        "passcodes")
+                    await self._send({"t": "locked", "data": LOCKOUT_S})
+                else:
+                    await self._send({"t": "bypass", "data": {
+                        "ok": False, "left": MAX_FAILS - self.fails,
+                        "why": "That passcode did not match."}})
+                return
+            self.fails = 0
+            self.last_seen = time.time()
+            took = False
+            if self.on_bypass is not None:
+                try:
+                    took = bool(await self.on_bypass())
+                except Exception as e:
+                    log(f"[remote] bypass hook failed: {e}")
+                    took = False
+            self.bypassed = took
+            # SAID OUT LOUD EITHER WAY. A gate that turns itself off
+            # quietly is indistinguishable from one that was never on.
+            if took:
+                log("[remote] BYPASS ON for this remote session")
+                self.mouth.say("Permission checks are off for this "
+                               "remote session. They come back on when "
+                               "the session ends.")
+            else:
+                log("[remote] bypass refused: the mode did not flip")
+                self.mouth.say("I could not turn the checks off, so "
+                               "I'll keep asking.")
+            await self._send({"t": "bypass", "data": {
+                "ok": took,
+                "why": None if took
+                       else "The mode would not flip, so it still asks."}})
         elif t == "bye":
             await self._end("signed off on the phone")
             await self._hello()
@@ -396,13 +474,15 @@ class Remote:
         self.typed_q.put(text)          # the same path as a typed line
 
 
-async def start(loop, mouth, typed_q, on_begin, on_end, quit_phrases):
+async def start(loop, mouth, typed_q, on_begin, on_end, quit_phrases,
+                on_bypass=None):
     """Start the remote server inside the voice line's event loop.
     Returns the Remote, or None when remote is off or fails to bind."""
     if not CFG.get("remote_enabled"):
         return None
     from aiohttp import web
-    r = Remote(loop, mouth, typed_q, on_begin, on_end, quit_phrases)
+    r = Remote(loop, mouth, typed_q, on_begin, on_end, quit_phrases,
+               on_bypass)
     app = web.Application(client_max_size=MAX_CLIP_BYTES)
     app.router.add_get("/", r.page)
     app.router.add_get("/ws", r.socket)
