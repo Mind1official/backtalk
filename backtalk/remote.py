@@ -309,7 +309,15 @@ class Remote:
             # A tapped Approve/Deny. It is fed in as plain words on the
             # same queue as a typed line, so the spoken gate's own
             # vocabulary and its deny-by-default rule still decide.
-            word = "yes" if str(m.get("data")) == "yes" else "no"
+            # An explicit allowlist of the three words the page can send.
+            # This was "yes" if data == "yes" else "no", which silently
+            # turned the THIRD button -- "YES, AND STOP ASKING FOR THIS",
+            # which sends "always" -- into a DENY. A yes button that means
+            # no is the one failure a permission gate must never have, and
+            # it quoted the person as saying "no" when they never did.
+            # Still deny-by-default: anything unrecognised becomes "no".
+            raw = str(m.get("data") or "").strip().lower()
+            word = raw if raw in ("yes", "no", "always") else "no"
             self.last_seen = time.time()
             log(f"[remote] permission answered by tap: {word}")
             self.typed_q.put(word)

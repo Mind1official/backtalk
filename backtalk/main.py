@@ -214,7 +214,28 @@ def _human_what(tool, tool_input, ctx):
 # never silently widen what can run unasked.
 _ALWAYS = {"always", "yes always", "always allow", "allow always",
            "stop asking for this", "stop asking for this kind",
+           "stop asking", "stop asking me",
            "don t ask again", "do not ask again", "never ask again"}
+# Leading agreement words to strip before re-checking _ALWAYS, so the
+# natural "yes, stop asking" matches. It used to match NEITHER set and
+# therefore DENIED -- an answer that literally starts with "yes" being
+# read as a refusal. Stripping is tight on purpose: whatever remains
+# must still match an _ALWAYS phrase exactly, so a vague "yes, fine"
+# can never widen the allowlist.
+_YES_PREFIXES = ("yes and ", "yes ", "yeah and ", "yeah ", "yep ",
+                 "sure ", "okay ", "ok ")
+
+
+def _is_always(said):
+    """True if the answer means "approve this AND stop asking", allowing
+    a leading yes. Checked BEFORE _YES so "yes, stop asking" widens the
+    allowlist instead of being treated as a plain one-off approval."""
+    if said in _ALWAYS:
+        return True
+    for p in _YES_PREFIXES:
+        if said.startswith(p) and said[len(p):] in _ALWAYS:
+            return True
+    return False
 
 
 def _perm_rule(tool, tool_input):
@@ -395,7 +416,7 @@ def make_permission_gate(mouth):
                         "cancelled.",
                 interrupt=False)
         said = _norm_speech(answer)
-        always = said in _ALWAYS
+        always = _is_always(said)
         approved = always or said in _YES
         # the model keeps working either way: restore the working state
         signals.set_state("thinking")
