@@ -208,6 +208,14 @@ DEFAULTS = {
     "stt_model": "small.en",
     # "auto" uses CUDA when present, otherwise CPU. int8 keeps CPU fast.
     "stt_device": "auto",
+    # OUR FORK (2026-10-05): which speaker Janus comes out of. Empty = whatever
+    # Windows calls the default device, which is the old behaviour. Otherwise a
+    # device index, or any part of the device's NAME ("Headset", "Voicemeeter")
+    # matched case-insensitively against the first output device containing it.
+    # HOT-RELOADED: change it mid-session and the next sentence comes out of the
+    # new device, no restart -- which is the whole point when the swap happens
+    # live on stream.
+    "output_device": "",
     "stt_compute": "int8",
     # The microphone to record from, matched by NAME. "" means whatever
     # the OS calls the default input, which is right on most machines.

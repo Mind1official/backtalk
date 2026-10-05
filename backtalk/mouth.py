@@ -50,6 +50,7 @@ import threading
 import numpy as np
 import sounddevice as sd
 
+from backtalk import config
 from backtalk.config import CFG
 from backtalk.vlog import log
 
@@ -341,6 +342,10 @@ class Mouth:
         # The one persistent output stream (audio law #1).
         # Worker-thread-only — never touch from other threads.
         self._out: sd.OutputStream | None = None
+        # Output device selection, re-checked from the config file's mtime so
+        # it can be swapped mid-session (our fork, 2026-10-05).
+        self._dev_id = None
+        self._dev_mtime = 0.0
         self._out_rate: int | None = None
         self.ducker = Ducker()  # public: PTT ducks for the USER's voice too
         # REMOTE SINK (remote.py sets it): while sink.active() is true,
@@ -421,10 +426,58 @@ class Mouth:
                     self.ducker.speech_end()
                     signals.set_state("idle")
 
+    def _wanted_device(self):
+        """Which output device the config asks for, re-read from disk every
+        time so a swap takes effect on the NEXT sentence with no restart.
+
+        Returns a sounddevice device id, or None for the Windows default.
+        A name that matches nothing falls back to the default and says so --
+        going silent because of a typo is the worst possible failure here.
+        """
+        try:
+            mtime = config.CONFIG_PATH.stat().st_mtime
+        except OSError:
+            return self._dev_id
+        if mtime == self._dev_mtime:
+            return self._dev_id
+        self._dev_mtime = mtime
+        try:
+            want = str(json.loads(config.CONFIG_PATH.read_text())
+                       .get("output_device", "") or "").strip()
+        except Exception:
+            return self._dev_id
+
+        new_id = None
+        if want:
+            if want.isdigit():
+                new_id = int(want)
+            else:
+                low = want.lower()
+                for i, d in enumerate(sd.query_devices()):
+                    if d.get("max_output_channels", 0) > 0 and low in d["name"].lower():
+                        new_id = i
+                        break
+                if new_id is None:
+                    log(f"[mouth] no output device matching {want!r} — "
+                        f"staying on the Windows default")
+        if new_id != self._dev_id:
+            name = "the Windows default"
+            if new_id is not None:
+                try:
+                    name = sd.query_devices(new_id)["name"]
+                except Exception:
+                    name = f"device {new_id}"
+            log(f"[mouth] output device -> {name}")
+            self._dev_id = new_id
+            # Force the stream to be rebuilt on the new device.
+            self._drop_out()
+        return self._dev_id
+
     def _get_out(self, rate: int) -> sd.OutputStream:
         """The long-lived stream (audio law #1). Reopened only when the
         sample rate changes (ElevenLabs 44.1k <-> Kokoro 24k fallback:
         rare, costs at most one blip on the switch)."""
+        device = self._wanted_device()
         if self._out is not None and self._out_rate == rate:
             # Guarded, because the stream can die UNDER us: the ears
             # rebuild the whole audio system to recover from a device
@@ -440,7 +493,8 @@ class Mouth:
             except Exception:
                 log("[mouth] the output stream went away, reopening")
         self._drop_out()
-        self._out = sd.OutputStream(samplerate=rate, channels=1, dtype="int16")
+        self._out = sd.OutputStream(samplerate=rate, channels=1, dtype="int16",
+                                    device=device)
         self._out_rate = rate
         self._out.start()
         return self._out
