@@ -118,6 +118,29 @@ def set_state(name: str):
 
 
 _MUSIC_FILE = os.path.join(_DIR, ".voice_music")
+_REMOTE_FILE = os.path.join(_DIR, ".voice_remote")
+
+
+def set_remote(on: bool):
+    """A phone holds the floor (remote.py): writes .voice_remote while a
+    remote session is live and removes it when the desk gets the line
+    back. The face reads it to show its TAKE BACK THE LINE button, which
+    is the only escape hatch that works while the local mic is paused.
+    If a voice line dies mid-session the file can linger; a stale button
+    is harmless, since pressing it only sends a phrase nothing acts on.
+    Never raises."""
+    _emit("remote", {"on": bool(on)})
+    try:
+        if on:
+            with open(_REMOTE_FILE, "w") as f:
+                f.write(json.dumps({"ts": time.time(), "on": True}))
+        else:
+            try:
+                os.remove(_REMOTE_FILE)
+            except FileNotFoundError:
+                pass
+    except OSError:
+        pass
 
 
 def set_music(on: bool, bands=None):

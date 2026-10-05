@@ -465,6 +465,13 @@ CONSOLE_VERBS = {
                        "go music mode", "switch to music mode"),
     "music_off":      ("music mode off", "turn off music mode",
                        "exit music mode"),
+    # The desk's escape hatch from a stuck remote session. Reachable by
+    # the talk key and the face's typed box (and its TAKE BACK THE LINE
+    # button, which just sends this phrase) -- NOT by the open mic, which
+    # is paused for the whole time a phone holds the floor.
+    "remote_end":     ("take back the line", "take over remote",
+                       "take back the remote", "end the remote session",
+                       "kill the remote session", "drop the remote"),
 }
 _EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -1113,6 +1120,15 @@ async def amain():
                 log("[console] answer-only -> off")
                 mouth.say("Open mic mode. I'll answer anything again, "
                           "no name needed.")
+        elif verb == "remote_end":
+            resp = ""
+            srv = _REMOTE["srv"]
+            if srv is None or not remote_mod.STATE["active"]:
+                mouth.say("No remote session is holding the line.")
+            else:
+                await srv.end_now()
+                log("[console] remote session ended at the desk")
+                mouth.say("Remote session ended. The line is yours again.")
         elif verb == "ask":
             resp = ""
             saved = _write_config_key("permission_mode", "ask")

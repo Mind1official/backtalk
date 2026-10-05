@@ -223,7 +223,13 @@ function connect() {
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     retry = 0;
-    const tok = sessionStorage.getItem("vl_token");
+    // localStorage, NOT sessionStorage: a closed window used to take the
+    // resume token with it, so reopening the page could not get back into
+    // a session that was still live. The token is not a standing key --
+    // the server only honours it inside the 30-minute idle window and
+    // drops it the moment a session ends, and Cloudflare Access still
+    // sits in front of the page.
+    const tok = localStorage.getItem("vl_token");
     if (tok) ws.send(JSON.stringify({ t: "auth", token: tok }));
   };
   ws.onmessage = (ev) => {
@@ -239,10 +245,10 @@ function connect() {
       case "auth":
         if (d.ok) {
           authed = true; $("bye").style.display = "block"; showPad(false);
-          if (d.token) sessionStorage.setItem("vl_token", d.token);
+          if (d.token) localStorage.setItem("vl_token", d.token);
           setStatus("Unlocked", `Hold anywhere to talk to ${name}.`);
         } else {
-          sessionStorage.removeItem("vl_token"); authed = false; showPad(true);
+          localStorage.removeItem("vl_token"); authed = false; showPad(true);
           if (d.left !== undefined) {
             setStatus("Wrong PIN", `${d.left} ${d.left === 1 ? "try" : "tries"} left.`);
             padMsg(`Wrong PIN - ${d.left} ${d.left === 1 ? "try" : "tries"} left.`, true);
@@ -312,7 +318,7 @@ stage.addEventListener("contextmenu", (e) => e.preventDefault());
 
 $("bye").onclick = () => {
   if (ws.readyState === 1) ws.send(JSON.stringify({ t: "bye" }));
-  sessionStorage.removeItem("vl_token"); authed = false; flush(); showPad(true); showAsk(null);
+  localStorage.removeItem("vl_token"); authed = false; flush(); showPad(true); showAsk(null);
 };
 
 // Browsers only allow the mic and audio after a real tap, so one tap opens both.

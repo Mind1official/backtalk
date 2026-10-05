@@ -168,6 +168,7 @@ class Remote:
             return
         STATE["active"] = True
         signals.REMOTE_MUTE = True
+        signals.set_remote(True)
         signals.static_stop()
         self.mouth.shut_up()            # nothing half-said at the desk
         self.mouth.remote = self
@@ -180,10 +181,18 @@ class Remote:
             return
         STATE["active"] = False
         signals.REMOTE_MUTE = False
+        signals.set_remote(False)
         self.mouth.shut_up()
         self.mouth.remote = None
         log(f"[remote] session ended ({why}): back to local")
         await self.on_end()
+
+    async def end_now(self, why: str = "taken back at the desk"):
+        """End a live session from the PC side and put the phone's keypad
+        back up. The desk always outranks the phone: whoever is physically
+        at the machine gets the final say over who holds the line."""
+        await self._end(why)
+        await self._hello()
 
     async def _watch(self):
         """Ends an idle session, or one whose phone never came back."""
@@ -276,7 +285,16 @@ class Remote:
                 await self._send({"t": "auth", "data": {"ok": True}})
             else:
                 await self._send({"t": "auth", "data": {"ok": False}})
-        elif t == "pin" and not STATE["active"]:
+        elif t == "pin":
+            # Deliberately NOT gated on "not STATE[active]". A window
+            # closed mid-session takes its resume token with it, and the
+            # session outlives it for the grace period -- so refusing the
+            # PIN here left no way back in AND no way for the desk to
+            # speak, because the local mic stays paused while a session
+            # is live. The PIN is still required either way: _gate holds
+            # the one attempt/lockout path and _begin is a no-op when a
+            # session is already up, so this reclaims a session, never
+            # opens an unlocked one.
             now = time.time()
             if now < self.locked_until:
                 await self._send({"t": "locked",
