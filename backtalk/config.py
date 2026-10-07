@@ -108,6 +108,13 @@ DEFAULTS = {
     # (the switch saves itself here). The --open-mic launch flag
     # forces "open" for one session.
     "mic_mode": "ptt",
+    # Answer-only mode at startup: true and the mic ignores every
+    # utterance that does not LEAD with "name" above, until "open mic
+    # mode" is said. A filter on top of whichever mic_mode is in use,
+    # not a mode of its own. The spoken switches ("go answer only
+    # mode" / "open mic mode") save themselves back here, so the last
+    # thing you said is what the next launch starts in.
+    "answer_only": False,
     # Playback speed for the built-in voice: 1.0 is Kokoro's native
     # pace, 1.15 is noticeably brisker, 0.9 is slower. Kokoro's own
     # pipeline implements it, so quality holds across sane values

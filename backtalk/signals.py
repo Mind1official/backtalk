@@ -23,6 +23,7 @@ is the whole integration surface:
   .voice_state        idle | listening | thinking | speaking
   .voice_waveform     JSON {ts, samples: [64 floats]} while audio plays
   .voice_loading_pid  exists while the thinking sound is playing
+  .voice_answeronly  exists while answer-only mode is on
   .voice_rate_limits  JSON {window: {utilization, resets_at}} — only
                       written when show_usage is on
   .voice_context      JSON {used, total, free, pct, categories, ts} —
@@ -61,6 +62,7 @@ _RATE_LIMIT_FILE = os.path.join(_DIR, ".voice_rate_limits")
 _CONTEXT_FILE = os.path.join(_DIR, ".voice_context")
 _PROMPT_FILE = os.path.join(_DIR, ".voice_prompt")
 _TYPED_FILE = os.path.join(_DIR, ".voice_typed")
+_ANSWERONLY_FILE = os.path.join(_DIR, ".voice_answeronly")
 _TRANSCRIPT_FILE = os.path.join(_DIR, ".transcript_log")
 _TRANSCRIPT_MAX_LINES = 200
 NL = chr(10)  # written through a name so this module never
@@ -137,6 +139,26 @@ def set_remote(on: bool):
         else:
             try:
                 os.remove(_REMOTE_FILE)
+            except FileNotFoundError:
+                pass
+    except OSError:
+        pass
+
+
+def set_answer_only(on: bool):
+    """Answer-only mode is on: the mic ignores anything that does not
+    lead with the agent's name. Writes .voice_answeronly while on and
+    removes it when open mic comes back, so the face can SAY so -- an
+    invisible gate is indistinguishable from a deaf microphone. Never
+    raises."""
+    _emit("answer_only", {"on": bool(on)})
+    try:
+        if on:
+            with open(_ANSWERONLY_FILE, "w") as f:
+                f.write(json.dumps({"ts": time.time(), "on": True}))
+        else:
+            try:
+                os.remove(_ANSWERONLY_FILE)
             except FileNotFoundError:
                 pass
     except OSError:

@@ -125,7 +125,9 @@ _MIC = {"mode": "ptt", "gen": 0, "btn": False}
 # dropped unless it LEADS with the agent's name (the cue gets stripped
 # before the rest goes to the brain). A filter on top of open-mic
 # listening, not a mic_mode of its own.
-_ANSWERONLY = {"on": False}
+# Seeded from the config key answer_only, so the gate can be the
+# standing default instead of something you have to say every launch.
+_ANSWERONLY = {"on": bool(CFG.get("answer_only"))}
 
 # Answer-only mode gates everything that does not lead with the agent's
 # name -- but a clip is time-critical: the moment worth clipping is gone
@@ -1076,6 +1078,9 @@ async def amain():
     threading.Thread(target=_typed_file_reader, args=(typed_q,),
                      daemon=True).start()
     signals.prompt_clear()   # a prompt from a previous run is never current
+    # Publish the startup gate state, so the face never shows a stale
+    # badge from the last run -- or hides a gate that is actually on.
+    signals.set_answer_only(_ANSWERONLY["on"])
 
     # REMOTE VOICE: while a phone holds the floor, permissions drop to
     # "ask" (answered from the phone), and come back as they were after.
@@ -1295,6 +1300,8 @@ async def amain():
                 mouth.say("Already in answer-only mode.")
             else:
                 _ANSWERONLY["on"] = True
+                signals.set_answer_only(True)
+                _write_config_key("answer_only", True)
                 log("[console] answer-only -> on")
                 mouth.say(f"Answer-only mode on. I'll ignore anything "
                           f"that doesn't start with {NAME}. Say open "
@@ -1305,6 +1312,8 @@ async def amain():
                 mouth.say("Already in open mic mode.")
             else:
                 _ANSWERONLY["on"] = False
+                signals.set_answer_only(False)
+                _write_config_key("answer_only", False)
                 log("[console] answer-only -> off")
                 mouth.say("Open mic mode. I'll answer anything again, "
                           "no name needed.")
