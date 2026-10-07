@@ -180,6 +180,16 @@ def _norm_speech(text):
     return " ".join("".join(out).split())
 
 
+# Every spelling speech-to-text actually produces for the wake word.
+# One exact name was too brittle: a single mis-hear ("Dennis" for
+# "Janice") made answer-only mode look stone deaf, and the only clue
+# was a line in the log. Aliases come from the config key
+# name_aliases; normalised once here so the gate is a set lookup.
+_WAKE_WORDS = {w for w in (
+    _norm_speech(str(n))
+    for n in [NAME] + list(CFG.get("name_aliases") or [])) if w}
+
+
 def _deny_pending(reason=_INTERRUPT_ANSWER):
     """Resolve a pending spoken ask as a deny. Called whenever the turn
     that posed it is being interrupted, so the ask can never outlive its
@@ -1438,7 +1448,7 @@ async def amain():
             return True
         if _ANSWERONLY["on"] and not _is_clip_request(text):
             parts = text.strip().split(None, 1)
-            if not parts or _norm_speech(parts[0]) != _norm_speech(NAME):
+            if not parts or _norm_speech(parts[0]) not in _WAKE_WORDS:
                 log(f"[gate]   answer-only: ignored (no {NAME!r} lead-in)")
                 return True
             text = parts[1] if len(parts) > 1 else ""

@@ -115,6 +115,13 @@ DEFAULTS = {
     # mode" / "open mic mode") save themselves back here, so the last
     # thing you said is what the next launch starts in.
     "answer_only": False,
+    # Extra spellings the answer-only gate accepts as the wake word,
+    # because speech-to-text does not reliably produce "name" above --
+# "Janice" comes back as "Dennis" or "Janis" often enough that one
+    # exact match made the mic look broken. SINGLE WORDS ONLY: the gate
+    # compares the first word of an utterance, so a two-word alias can
+    # never match. Case and punctuation do not matter.
+    "name_aliases": [],
     # Playback speed for the built-in voice: 1.0 is Kokoro's native
     # pace, 1.15 is noticeably brisker, 0.9 is slower. Kokoro's own
     # pipeline implements it, so quality holds across sane values
