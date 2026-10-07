@@ -190,6 +190,30 @@ _WAKE_WORDS = {w for w in (
     for n in [NAME] + list(CFG.get("name_aliases") or [])) if w}
 
 
+# One optional filler word allowed BEFORE the wake word, because nobody
+# addresses a person by barking the bare name: "hey Janice" is how it
+# actually comes out. Deliberately a short exact list and exactly ONE
+# word deep -- anything looser starts letting whole sentences through
+# that merely happen to mention the name, which is the one thing the
+# gate exists to stop.
+_WAKE_FILLERS = {"hey", "hi", "hello", "ok", "okay", "yo", "um", "uh",
+                 "so"}
+
+
+def _strip_wake(text):
+    """The utterance addressed to us, with the wake word (and any one
+    filler in front of it) removed -- or None when it was not addressed
+    to us at all. An empty string means the name was said and nothing
+    else, which is not a question and gets dropped by the caller."""
+    words = text.strip().split()
+    for skip in (0, 1):
+        if len(words) > skip and _norm_speech(words[skip]) in _WAKE_WORDS:
+            if skip and _norm_speech(words[0]) not in _WAKE_FILLERS:
+                return None
+            return " ".join(words[skip + 1:])
+    return None
+
+
 def _deny_pending(reason=_INTERRUPT_ANSWER):
     """Resolve a pending spoken ask as a deny. Called whenever the turn
     that posed it is being interrupted, so the ask can never outlive its
@@ -1447,11 +1471,11 @@ async def amain():
             await run_console(verb)
             return True
         if _ANSWERONLY["on"] and not _is_clip_request(text):
-            parts = text.strip().split(None, 1)
-            if not parts or _norm_speech(parts[0]) not in _WAKE_WORDS:
+            rest = _strip_wake(text)
+            if rest is None:
                 log(f"[gate]   answer-only: ignored (no {NAME!r} lead-in)")
                 return True
-            text = parts[1] if len(parts) > 1 else ""
+            text = rest
             if not text:
                 return True
         signals.transcript_end()
