@@ -134,8 +134,8 @@ _ANSWERONLY = {"on": bool(CFG.get("answer_only"))}
 # in ten seconds, and "Janus, clip that" is a mouthful when a fight is
 # happening. So a clip request gets through the gate on its own.
 _CLIP_RE = re.compile(
-    r"(?:clip(?:\s+(?:that|it|this))?|make\s+a\s+clip|"
-    r"create\s+a\s+clip|take\s+a\s+clip|clip\s+it)", re.I)
+    r"\b(?:clip(?:\s+(?:that|it|this))?|make\s+a\s+clip|"
+    r"create\s+a\s+clip|take\s+a\s+clip|clip\s+it)\b", re.I)
 
 
 def _is_clip_request(text: str) -> bool:
