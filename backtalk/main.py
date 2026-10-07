@@ -127,6 +127,23 @@ _MIC = {"mode": "ptt", "gen": 0, "btn": False}
 # listening, not a mic_mode of its own.
 _ANSWERONLY = {"on": False}
 
+# Answer-only mode gates everything that does not lead with the agent's
+# name -- but a clip is time-critical: the moment worth clipping is gone
+# in ten seconds, and "Janus, clip that" is a mouthful when a fight is
+# happening. So a clip request gets through the gate on its own.
+_CLIP_RE = re.compile(
+    r"(?:clip(?:\s+(?:that|it|this))?|make\s+a\s+clip|"
+    r"create\s+a\s+clip|take\s+a\s+clip|clip\s+it)", re.I)
+
+
+def _is_clip_request(text: str) -> bool:
+    """True for the short spoken asks that mean 'clip this now'. Kept
+    narrow on purpose: it is a hole in the answer-only gate, so it only
+    opens for an utterance that is basically nothing but a clip ask."""
+    t = text.strip()
+    return bool(t) and len(t.split()) <= 6 and _CLIP_RE.search(t) is not None
+
+
 # Approvals are EXACT matches after normalization, never prefixes:
 # "yesterday", "yes or no", and "yes, but do not overwrite" must all
 # fail. Anything that is not an exact yes DENIES, with the words passed
@@ -1410,7 +1427,7 @@ async def amain():
         if verb:
             await run_console(verb)
             return True
-        if _ANSWERONLY["on"]:
+        if _ANSWERONLY["on"] and not _is_clip_request(text):
             parts = text.strip().split(None, 1)
             if not parts or _norm_speech(parts[0]) != _norm_speech(NAME):
                 log(f"[gate]   answer-only: ignored (no {NAME!r} lead-in)")

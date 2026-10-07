@@ -39,6 +39,7 @@ HARD-WON AUDIO LAW #2 — buffer ~0.75s of synthesized audio before a
 sentence starts playing, so a slower machine never underruns into
 slow-motion garble.
 """
+import json
 import os
 import queue
 import re
@@ -436,16 +437,28 @@ class Mouth:
         """
         try:
             mtime = config.CONFIG_PATH.stat().st_mtime
-        except OSError:
+        except OSError as e:
+            log(f"[mouth] device: cannot stat {config.CONFIG_PATH} ({e})")
             return self._dev_id
+        if self._dev_mtime == 0.0:
+            # Say it ONCE on the first pass, so a session that never prints
+            # a device line is distinguishable from one where this method
+            # is never reached at all. That ambiguity cost an evening.
+            log(f"[mouth] device: reading {config.CONFIG_PATH}")
         if mtime == self._dev_mtime:
             return self._dev_id
         self._dev_mtime = mtime
         try:
             want = str(json.loads(config.CONFIG_PATH.read_text())
                        .get("output_device", "") or "").strip()
-        except Exception:
+        except (OSError, ValueError) as e:
+            # NARROW on purpose. This used to be a bare `except Exception`,
+            # and it silently swallowed a NameError from a missing `import
+            # json` -- so the setting was never read ONCE and nothing in the
+            # log ever said so. A bare except here hides the bug it causes.
+            log(f"[mouth] device: config unreadable ({e})")
             return self._dev_id
+        log(f"[mouth] device: config asks for {want!r}")
 
         new_id = None
         if want:
