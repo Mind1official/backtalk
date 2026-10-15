@@ -58,8 +58,23 @@ class ReopeningStream:
     # -- context manager -----------------------------------------------
     def __enter__(self):
         if self._stream is None:
-            self._stream = self._open()
+            self._stream = self._start(self._open())
         return self
+
+    @staticmethod
+    def _start(stream):
+        """An InputStream is OPEN but not RUNNING until it is started.
+
+        `with sd.InputStream(...)` used to do this for us; taking over the
+        context manager meant taking over the start. Missing it reads
+        "Stream is stopped [PaErrorCode -9983]" on EVERY read -- the mic
+        is dead instantly and the reopen loop spins (2026-10-15, caught
+        by the log line this class added).
+        """
+        start = getattr(stream, "start", None)
+        if start is not None:
+            start()
+        return stream
 
     def __exit__(self, *exc):
         self._close()
@@ -80,7 +95,7 @@ class ReopeningStream:
         takes. Only ever returns real audio."""
         while True:
             if self._stream is None:
-                self._stream = self._open()
+                self._stream = self._start(self._open())
             try:
                 return self._stream.read(frames)
             except Exception as e:
@@ -96,7 +111,7 @@ class ReopeningStream:
         while True:
             attempts += 1
             try:
-                self._stream = self._open()
+                self._stream = self._start(self._open())
             except Exception as e:
                 if said < _MAX_LINES_PER_OUTAGE:
                     said += 1
