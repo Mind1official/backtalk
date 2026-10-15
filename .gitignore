@@ -29,3 +29,6 @@ show.json
 .transcript_last
 .transcript_log
 .watcher_tally
+
+# Runtime health snapshot, written by the watchdog.
+.health

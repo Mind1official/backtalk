@@ -119,6 +119,47 @@ def set_state(name: str):
             pass
 
 
+_MIC_FILE = os.path.join(_DIR, ".voice_mic")
+_last_mic_write = 0.0
+_MIC_MIN_INTERVAL = 0.05
+
+
+def set_mic_level(dbfs: float):
+    """Publish how loud the room is RIGHT NOW, 0..1, for the face.
+
+    The ears loop already computes this every frame to decide whether
+    someone is talking; it was thrown away afterwards. The visualizer
+    wanted a mic level and the only other way to get one was opening the
+    microphone in the browser -- which takes the device away from this
+    process and kills the voice line outright (learned 2026-10-15). So
+    the process that already OWNS the mic publishes the number instead.
+
+    `dbfs` arrives as POSITIVE dB below full scale (see ears._dbfs), so
+    60 is near-silence and 0 is clipping. The map below puts normal
+    speech in the middle of the range rather than pinned at either end.
+
+    NOTHING HERE MAY DISTURB THE EARS. It is called from the capture
+    loop, so it is throttled to 20 Hz (a frame is 20-30ms and nothing
+    watching this renders faster than a refresh) and every failure is
+    swallowed -- a face that cannot draw a ring is never worth a dropped
+    syllable. It was briefly suspected of killing the mic on 2026-10-15;
+    the real cause was two backtalk instances fighting over the device,
+    and the mic died just the same with this reverted.
+    """
+    global _last_mic_write
+    now = time.time()
+    if now - _last_mic_write < _MIC_MIN_INTERVAL:
+        return
+    _last_mic_write = now
+    try:
+        level = (55.0 - float(dbfs)) / 35.0
+        level = max(0.0, min(1.0, level))
+        with open(_MIC_FILE, "w") as f:
+            f.write(json.dumps({"ts": now, "level": round(level, 4)}))
+    except Exception:
+        pass
+
+
 _MUSIC_FILE = os.path.join(_DIR, ".voice_music")
 _REMOTE_FILE = os.path.join(_DIR, ".voice_remote")
 

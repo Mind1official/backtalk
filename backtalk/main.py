@@ -641,6 +641,11 @@ CONSOLE_VERBS = {
                        "switch to answer only mode"),
     "answeronly_off": ("open mic mode", "turn off answer only mode",
                        "exit answer only mode"),
+    # The vault dashboard. A console cue, not a request to Janus: the
+    # window should be up before he finishes saying it.
+    "dashboard":      ("open vault", "open the vault",
+                       "open dashboard", "open the dashboard",
+                       "show me the vault", "show me the dashboard"),
     "music_on":       ("music mode on", "turn on music mode",
                        "go music mode", "switch to music mode"),
     "music_off":      ("music mode off", "turn off music mode",
@@ -1324,6 +1329,21 @@ async def amain():
             ears.music.force_on()
             mouth.say("Music mode on. Visualizer up. I won't listen to "
                       "the lyrics. Hold the talk key if you need me.")
+        elif verb == "dashboard":
+            resp = ""
+            import subprocess
+            from pathlib import Path
+            bat = Path(__file__).resolve().parents[2] / "tools" / "Start Dashboard.bat"
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "", str(bat)],
+                                 cwd=str(bat.parent.parent),
+                                 creationflags=getattr(subprocess,
+                                                       "CREATE_NO_WINDOW", 0))
+                log("[console] dashboard opened")
+                mouth.say("Vault's up.")
+            except Exception as e:
+                log(f"[console] dashboard failed: {e}")
+                mouth.say("The dashboard would not start. I'll look at it.")
         elif verb == "music_off":
             resp = ""
             ears.music.force_off()

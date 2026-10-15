@@ -40,6 +40,8 @@ import sounddevice as sd
 import webrtcvad
 
 from backtalk.config import CFG
+from backtalk.micgate import GateWatchdog
+from backtalk import signals
 from backtalk.vlog import log
 
 RATE = 16000
@@ -439,6 +441,11 @@ class Ears:
         elapsed = 0.0
         floor = NoiseFloor()
         margin = float(CFG.get("mic_gate_db") or 0.0)
+        # NO GATE IS TRUSTED FOR EVER. See micgate.py: a stuck
+        # `mouth.speaking` made the mic deaf permanently and silently
+        # (2026-10-15). Past the limit the gate is overridden, loudly.
+        watchdog = GateWatchdog(float(CFG.get("mic_gate_max_s") or 25.0))
+        watchdog_said = False
 
         with _open_mic() as stream:
             while True:
@@ -449,7 +456,15 @@ class Ears:
                 if timeout_s and elapsed > timeout_s and not in_utterance:
                     return None
                 mono = block[:, 0].copy()
-                if gate and gate():
+                shut = watchdog.update(bool(gate and gate()))
+                if watchdog.tripped and not watchdog_said:
+                    watchdog_said = True
+                    log("[ears] the mic gate has been shut far too long to "
+                        "be real -- forcing the microphone open. Something "
+                        "is stuck in playback; see micgate.py")
+                elif not watchdog.tripped:
+                    watchdog_said = False
+                if shut:
                     # speakers are talking and barge-in isn't on: ignore
                     ring.clear()
                     continue
@@ -457,6 +472,9 @@ class Ears:
                 # floor says "is this loud enough to be THIS room's
                 # speech". A knock passes the first and fails the second.
                 level = _dbfs(mono)
+                # Hand the loudness to the bus too: the face draws from it,
+                # and this is the only process allowed to hold the mic.
+                signals.set_mic_level(level)
                 self.music.feed(mono, level)
                 self._hist.append(mono)
                 if self.music.on:
