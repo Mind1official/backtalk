@@ -44,6 +44,7 @@ class MusicDetector:
         self.gap_frames = max(1, int(0.35 / FRAME_S))
         self.exit_gaps, self.exit_window = 3, 8.0
         self.on = False
+        self.locked = False            # pinned on by voice until told off
         self.exited_on_speech = False   # consumed by the ears
         self.speech_frames = 0          # how far back the speech began
         self._recent = deque(maxlen=int(3 / FRAME_S))
@@ -124,6 +125,9 @@ class MusicDetector:
             need = self.reenter_s if quick else self.enter_s
             if self.sound_run_s >= need:
                 self._set(True, f"{self.sound_run_s:.0f}s of unbroken sound")
+        elif self.locked:
+            # pinned on by voice: no automatic exit, keep the bars fed
+            self._spectrum(frame)
         else:
             if self._quiet_run * FRAME_S >= self.exit_quiet_s:
                 self._left_quiet_at = self._i
@@ -139,17 +143,23 @@ class MusicDetector:
                 self._spectrum(frame)
 
     def force_on(self):
-        """The spoken "music mode on": skip the wait. The normal exits
-        still apply, since nothing is transcribed while it's on."""
-        if CFG.get("music_mode") and not self.on:
-            self._set(True, "asked for by voice")
+        """The spoken "music mode on": skip the wait AND pin it. Asked
+        for out loud it stays on through quiet patches and talking until
+        "music mode off" -- only the automatic entry exits on its own."""
+        if CFG.get("music_mode"):
+            self.locked = True
+            if not self.on:
+                self._set(True, "asked for by voice")
 
     def force_off(self):
+        self.locked = False
         if self.on:
             self._set(False, "asked for by voice")
 
     def _set(self, on: bool, why: str):
         self.on = on
+        if not on:
+            self.locked = False
         self._gaps.clear()
         self._spec_buf = []
         # Both run counters must start fresh on every transition, or the
