@@ -41,6 +41,7 @@ import webrtcvad
 
 from backtalk.config import CFG
 from backtalk.micgate import GateWatchdog
+from backtalk.micstream import ReopeningStream
 from backtalk import signals
 from backtalk.vlog import log
 
@@ -447,7 +448,7 @@ class Ears:
         watchdog = GateWatchdog(float(CFG.get("mic_gate_max_s") or 25.0))
         watchdog_said = False
 
-        with _open_mic() as stream:
+        with ReopeningStream(_open_mic, log=log) as stream:
             while True:
                 block, _ = stream.read(FRAME_LEN)
                 elapsed += FRAME_MS / 1000
@@ -552,7 +553,7 @@ def record_held(is_held, max_s: float = 60.0, min_s: float = 0.25) -> str | None
     then transcribe. The button is the VAD — no endpointing. Returns
     None for taps shorter than min_s (accidental presses)."""
     frames: list[np.ndarray] = []
-    with _open_mic() as stream:
+    with ReopeningStream(_open_mic, log=log) as stream:
         while is_held() and len(frames) * FRAME_MS / 1000 < max_s:
             block, _ = stream.read(FRAME_LEN)
             frames.append(block[:, 0].copy())
