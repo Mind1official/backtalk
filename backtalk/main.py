@@ -650,6 +650,26 @@ CONSOLE_VERBS = {
                        "go music mode", "switch to music mode"),
     "music_off":      ("music mode off", "turn off music mode",
                        "exit music mode"),
+    # WHICH SPEAKER JANUS COMES OUT OF. The pin in `output_device` only,
+    # never the Windows default -- Mind's rule 2026-10-16. Moving the
+    # Windows default would drag his game, stream and Discord audio along
+    # with it, and the whole point is that only the agent's voice moves.
+    # (`tools/set-audio.ps1` still exists for the Windows default, on
+    # purpose, as a separate deliberate act.)
+    #
+    # This is the setting that looks like a mystery: switching the Windows
+    # default moves everything on the machine EXCEPT her voice, because
+    # mouth.py hands the pinned name to sounddevice directly. mouth re-reads
+    # it on the config's mtime, so the confirmation sentence comes out of
+    # the NEW device -- the proof is hearing it.
+    "audio_rode":     ("switch audio to the rode", "switch audio to rode",
+                       "voice to the rode", "voice to rode",
+                       "come through the rode", "talk through the rode"),
+    "audio_monitor":  ("switch audio to the monitor",
+                       "switch audio to monitor",
+                       "voice to the monitor", "voice to monitor",
+                       "come through the monitor",
+                       "talk through the monitor"),
     # The desk's escape hatch from a stuck remote session. Reachable by
     # the talk key and the face's typed box (and its TAKE BACK THE LINE
     # button, which just sends this phrase) -- NOT by the open mic, which
@@ -1329,6 +1349,24 @@ async def amain():
             ears.music.force_on()
             mouth.say("Music mode on. Visualizer up. I won't listen to "
                       "the lyrics. Hold the talk key if you need me.")
+        elif verb in ("audio_rode", "audio_monitor"):
+            resp = ""
+            # Substrings, matched case-insensitively by mouth.py against the
+            # sounddevice name -- not exact names, so an endpoint renumbering
+            # ("3-" to "8-") does not break the cue.
+            want = "RODECaster" if verb == "audio_rode" else "VG248"
+            where = "the Rode" if verb == "audio_rode" else "the monitor"
+            if _write_config_key("output_device", want):
+                log(f"[console] output_device -> {want}")
+                # Said AFTER the write: mouth re-reads on mtime, so this
+                # sentence arrives on the new device and hearing it is the
+                # confirmation. If it comes out of the old one, it did not work.
+                mouth.say(f"Coming through {where} now.")
+            else:
+                log("[console] output_device write failed")
+                mouth.say("I could not write that to the config. "
+                          "Still on the old one.")
+
         elif verb == "dashboard":
             resp = ""
             import subprocess
